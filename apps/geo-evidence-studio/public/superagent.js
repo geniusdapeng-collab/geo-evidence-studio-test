@@ -186,7 +186,7 @@ function renderSources(sources) {
 
 function renderReport(reportStage, currentRevision) {
   const previous = reportStage.revision !== currentRevision;
-  const section = detailBlock(previous ? `上一轮已提交报告 · 第 ${reportStage.revision} 轮` : "研究报告");
+  const section = detailBlock(previous ? `历史报告 · 第 ${reportStage.revision} 轮` : "研究报告");
   const { report } = reportStage.evidence;
   if (report.title) section.append(node("strong", report.title));
   if (report.summary) section.append(node("p", report.summary, "sa-content"));
@@ -197,7 +197,7 @@ function renderReport(reportStage, currentRevision) {
   return section;
 }
 
-function renderReceipts(task, stages, evidenceStage, reportStage) {
+function renderReceipts(task, shownRevision, stages, evidenceStage, reportStage) {
   const section = detailBlock("执行回执");
   const evidence = evidenceStage?.evidence;
   const report = reportStage?.evidence;
@@ -205,9 +205,10 @@ function renderReceipts(task, stages, evidenceStage, reportStage) {
   details.append(node("summary", "查看任务编号、来源摘要与模型回执"));
   const usage = report?.usage;
   const rows = [
-    ["任务编号", task.taskId], ["本轮编号", task.revision], ["事件游标", task.latestEventCursor],
+    ["任务编号", task.taskId], ["回执轮次", shownRevision], ["任务当前轮次", task.revision],
+    ["任务最新事件游标", task.latestEventCursor],
     ["数据模式", (report?.dataMode ?? evidence?.dataMode) === "fixture" ? "本机夹具" : (report?.dataMode ?? evidence?.dataMode) === "real" ? "真实模型" : undefined],
-    ["已处理游标", task.completedEventCursor], ["证据阶段摘要", evidenceStage?.evidenceSha256],
+    ["报告使用的事件游标", reportStage?.input?.eventCursor], ["证据阶段摘要", evidenceStage?.evidenceSha256],
     ["报告阶段摘要", reportStage?.evidenceSha256], ["模型", report?.model], ["模型响应 ID", report?.responseId],
     ["模型请求摘要", report?.requestSha256], ["模型响应摘要", report?.responseSha256],
     ["输入词元", usage?.promptTokens], ["输出词元", usage?.completionTokens], ["总词元", usage?.totalTokens],
@@ -222,12 +223,12 @@ function renderReceipts(task, stages, evidenceStage, reportStage) {
   return section;
 }
 
-function renderStages(task, stages) {
+function renderStages(task, stages, shownRevision = task.revision) {
   const reportStage = stages.filter((stage) => stage.stage === "report" && stage.evidence?.report).at(-1);
   const evidenceStage = stages.filter((stage) => stage.stage === "evidence" && Array.isArray(stage.evidence?.sources)).at(-1);
   return [
     ...(reportStage ? [renderReport(reportStage, task.revision)] : []),
-    renderSources(evidenceStage?.evidence.sources ?? []), renderReceipts(task, stages, evidenceStage, reportStage),
+    renderSources(evidenceStage?.evidence.sources ?? []), renderReceipts(task, shownRevision, stages, evidenceStage, reportStage),
   ];
 }
 
@@ -258,7 +259,7 @@ function renderTaskDetail(task, events) {
       stageView.replaceChildren(node("p", "正在读取历史回执…", "muted"));
       try {
         const { stages: old } = await request(`/tasks/${encodeURIComponent(task.taskId)}/revisions/${revision}?${scopeQuery()}`, undefined, scope);
-        if (!scope.signal.aborted && select.isConnected && Number(select.value) === revision) stageView.replaceChildren(...renderStages(task, old));
+        if (!scope.signal.aborted && select.isConnected && Number(select.value) === revision) stageView.replaceChildren(...renderStages(task, old, revision));
       } catch (error) {
         if (!scope.signal.aborted && select.isConnected && Number(select.value) === revision) {
           showError(error);
