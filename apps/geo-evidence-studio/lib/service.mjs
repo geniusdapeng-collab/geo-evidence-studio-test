@@ -1,7 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   ARTICLE_TOPICS,
   FUTURE_FRONTDESK_CASE,
@@ -9,10 +8,11 @@ import {
   buildArticleDraft,
   computeMetrics,
   groupMetrics,
-  parseCitations,
   sha256,
 } from "./core.mjs";
 import { createProvider, getProviderCapabilities } from "./providers.mjs";
+import { createGeoSuperAgentDeepSeek } from "./superagent-deepseek.mjs";
+import { GeoStateError, requireGeoId } from "./superagent-store.mjs";
 
 function slugify(value) {
   const ascii = value
@@ -49,31 +49,6 @@ function mergeProviderCitations(analysis, providerCitations = []) {
   };
 }
 
-function privateAddress(address) {
-  if (!address) return true;
-  if (address === "::1" || address.startsWith("fc") || address.startsWith("fd") || address.startsWith("fe80:")) return true;
-  if (!isIP(address)) return false;
-  const parts = address.split(".").map(Number);
-  if (parts.length !== 4) return false;
-  return parts[0] === 10
-    || parts[0] === 127
-    || (parts[0] === 169 && parts[1] === 254)
-    || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
-    || (parts[0] === 192 && parts[1] === 168)
-    || parts[0] === 0;
-}
-
-async function assertPublicHttpUrl(rawUrl) {
-  const url = new URL(rawUrl);
-  if (!["http:", "https:"].includes(url.protocol)) throw new Error("只允许抓取公开 HTTP(S) 页面");
-  if (url.username || url.password) throw new Error("引用 URL 不得包含凭据");
-  const addresses = await lookup(url.hostname, { all: true, verbatim: true });
-  if (addresses.length === 0 || addresses.some((entry) => privateAddress(entry.address))) {
-    throw new Error("拒绝抓取本机、内网或无法安全解析的地址");
-  }
-  return url;
-}
-
 async function mapLimit(items, concurrency, mapper) {
   const results = new Array(items.length);
   let cursor = 0;
@@ -89,10 +64,11 @@ async function mapLimit(items, concurrency, mapper) {
 }
 
 export class GeoEvidenceService {
-  constructor(store, { rootDir = process.cwd(), env = process.env } = {}) {
+  constructor(store, { rootDir = process.cwd(), env = process.env, citationAdapter } = {}) {
     this.store = store;
     this.rootDir = resolve(rootDir);
     this.env = env;
+    this.citationAdapter = citationAdapter ?? createGeoSuperAgentDeepSeek({ apiKey: env.DEEPSEEK_API_KEY ?? "" });
   }
 
   health() {
@@ -245,6 +221,9 @@ export class GeoEvidenceService {
     citations = [],
     dataMode = "imported",
   }) {
+    if (!["fixture", "imported"].includes(dataMode)) {
+      throw new GeoStateError("invalid_input", "手工导入答案只能标记为 imported 或 fixture", 400);
+    }
     const query = this.store.listQueries({ limit: 1000 }).find((item) => item.id === queryId);
     if (!query) throw new Error(`问题不存在：${queryId}`);
     const runId = this.store.createRun({
@@ -291,7 +270,7 @@ export class GeoEvidenceService {
       status: "success",
     });
     this.store.finishRun(runId, { status: "completed", successful: 1, failed: 0 });
-    return { runId, sampleId, analysis, evidenceUri: `file://${evidencePath}` };
+    return { runId, sampleId, dataMode, analysis, evidenceUri: `file://${evidencePath}` };
   }
 
   reanalyzeRun(runId) {
@@ -319,32 +298,18 @@ export class GeoEvidenceService {
   }
 
   async fetchCitation(url) {
-    const safeUrl = await assertPublicHttpUrl(url);
-    const response = await fetch(safeUrl, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(20_000),
-      headers: { "user-agent": "GeoEvidenceStudio/0.1 public-citation-inspector" },
-    });
-    if (!response.ok) throw new Error(`引用页返回 HTTP ${response.status}`);
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!/text\/html|text\/plain|application\/xhtml\+xml/i.test(contentType)) {
-      throw new Error(`不支持的内容类型：${contentType || "unknown"}`);
-    }
-    const raw = await response.text();
-    const text = raw.slice(0, 2_000_000);
-    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(text)?.[1]
-      ?.replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim() ?? "";
+    const { provider, source, fetch: fetchReceipt } = await this.citationAdapter.fetchPublicEvidence({ url });
     return {
-      url: safeUrl.toString(),
-      finalUrl: response.url,
-      status: response.status,
-      contentType,
-      title,
-      contentSha256: sha256(text),
-      bytes: Buffer.byteLength(text),
-      fetchedAt: new Date().toISOString(),
+      url: source.url,
+      finalUrl: null,
+      status: null,
+      provider,
+      contentType: "text/markdown",
+      title: source.title,
+      contentSha256: source.contentSha256,
+      bytes: fetchReceipt.bytes,
+      fetchedAt: fetchReceipt.fetchedAt,
+      fetchReceipt,
     };
   }
 
@@ -392,74 +357,45 @@ export class GeoEvidenceService {
     };
   }
 
-  async publishArticle({ articleId, channel = "local", webhookUrl, approvedBy }) {
-    const article = this.store.getArticle(articleId);
-    if (!article) throw new Error(`文章不存在：${articleId}`);
-    if (article.data_mode === "draft" && !approvedBy) {
-      throw new Error("草案发布必须提供 approvedBy，禁止跳过人工审批");
+  async publishArticle({ articleId, channel = "local", approvedBy }) {
+    if (channel !== "local") {
+      throw new GeoStateError("publish_forbidden", "此实例只支持由本地操作员导出文章", 403);
     }
+    requireGeoId(articleId, "articleId");
+    if (typeof approvedBy !== "string" || !approvedBy.trim() || approvedBy.length > 128) {
+      throw new GeoStateError("approval_required", "本地导出需要操作员署名", 403);
+    }
+    const article = this.store.getArticle(articleId);
+    if (!article) throw new GeoStateError("not_found", "当前工作区没有此文章", 404);
     const publicationId = this.store.createPublication({
       articleId,
       channel,
       status: "running",
-      receipt: { approvedBy: approvedBy ?? null, dataMode: article.data_mode },
+      receipt: { approvedBy, dataMode: article.data_mode },
     });
     try {
-      if (channel === "local") {
-        const outDir = join(this.rootDir, "outputs", "geo-evidence-studio", "published", article.slug);
-        await mkdir(outDir, { recursive: true });
-        const markdownPath = join(outDir, "article.md");
-        const manifestPath = join(outDir, "receipt.json");
-        await writeFile(markdownPath, article.markdown, "utf8");
-        const receipt = {
-          schemaVersion: "geo-publication/v1",
-          articleId,
-          channel,
-          status: "published",
-          url: `file://${markdownPath}`,
-          contentSha256: sha256(article.markdown),
-          approvedBy: approvedBy ?? null,
-          publishedAt: new Date().toISOString(),
-          dataMode: article.data_mode,
-        };
-        await writeFile(manifestPath, `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
-        this.store.completePublication(publicationId, {
-          url: receipt.url,
-          receipt: { ...receipt, manifest: `file://${manifestPath}` },
-        });
-        return { publicationId, ...receipt };
-      }
-
-      if (channel === "webhook") {
-        if (!webhookUrl) throw new Error("webhook 发布需要 webhookUrl");
-        const response = await fetch(webhookUrl, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            title: article.title,
-            slug: article.slug,
-            markdown: article.markdown,
-            evidenceHash: article.evidence_hash,
-            approvedBy,
-          }),
-          signal: AbortSignal.timeout(30_000),
-        });
-        const text = await response.text();
-        if (!response.ok) throw new Error(`Webhook ${response.status}: ${text.slice(0, 500)}`);
-        let payload;
-        try {
-          payload = JSON.parse(text);
-        } catch {
-          payload = { raw: text.slice(0, 1000) };
-        }
-        this.store.completePublication(publicationId, {
-          url: payload.url ?? null,
-          receipt: { status: response.status, payload },
-        });
-        return { publicationId, channel, status: "published", ...payload };
-      }
-
-      throw new Error(`未知发布通道：${channel}`);
+      const outDir = join(this.rootDir, "outputs", "geo-evidence-studio", "published", publicationId);
+      await mkdir(outDir, { recursive: true });
+      const markdownPath = join(outDir, "article.md");
+      const manifestPath = join(outDir, "receipt.json");
+      await writeFile(markdownPath, article.markdown, { encoding: "utf8", flag: "wx" });
+      const receipt = {
+        schemaVersion: "geo-publication/v1",
+        articleId,
+        channel,
+        status: "published",
+        url: pathToFileURL(markdownPath).href,
+        contentSha256: sha256(article.markdown),
+        approvedBy,
+        publishedAt: new Date().toISOString(),
+        dataMode: article.data_mode,
+      };
+      await writeFile(manifestPath, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+      this.store.completePublication(publicationId, {
+        url: receipt.url,
+        receipt: { ...receipt, manifest: pathToFileURL(manifestPath).href },
+      });
+      return { publicationId, ...receipt };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.store.completePublication(publicationId, { error: message, receipt: { error: message } });
@@ -494,6 +430,10 @@ export class GeoEvidenceService {
   }
 
   async handleTool(name, params = {}, scope = {}) {
+    const installation = this.store.assertInstallationScope(scope);
+    if (!params || typeof params !== "object" || Array.isArray(params)) {
+      throw new GeoStateError("invalid_input", "工具参数必须是 JSON 对象", 400);
+    }
     switch (name) {
       case "visibility.collect": {
         const run = await this.runObservations({
@@ -503,7 +443,7 @@ export class GeoEvidenceService {
           platform: params.platform,
         });
         return {
-          result: { ...run, scope },
+          result: { ...run, scope: installation },
           receipt: {
             synced: run.successful > 0,
             snapshot_uri: `geo-evidence://run/${run.runId}`,
@@ -516,10 +456,10 @@ export class GeoEvidenceService {
         const generated = this.generateArticles({
           topicIds: params.topicIds,
           force: Boolean(params.force),
-          dataMode: params.dataMode ?? "draft",
+          dataMode: "draft",
         });
         return {
-          result: { ...generated, scope },
+          result: { ...generated, scope: installation },
           receipt: {
             synced: generated.created.length > 0,
             mode: "real",
@@ -537,19 +477,20 @@ export class GeoEvidenceService {
           dataMode: params.dataMode ?? "imported",
         });
         return {
-          result: { ...result, scope },
+          result: { ...result, scope: installation },
           receipt: {
             synced: true,
             snapshot_uri: result.evidenceUri,
             verified_at: new Date().toISOString(),
-            mode: params.dataMode === "fixture" ? "simulated" : "real",
+            mode: result.dataMode === "fixture" ? "simulated" : "real",
+            dataMode: result.dataMode,
           },
         };
       }
       case "citation.fetch": {
         const citation = await this.fetchCitation(String(params.url ?? ""));
         return {
-          result: { citation, scope },
+          result: { citation, scope: installation },
           receipt: {
             synced: true,
             snapshot_uri: citation.url,
@@ -559,44 +500,45 @@ export class GeoEvidenceService {
         };
       }
       case "geo_queue.emit": {
+        requireGeoId(params.articleId, "articleId");
         const article = this.store.getArticle(params.articleId);
-        if (!article) throw new Error(`文章不存在：${params.articleId}`);
+        if (!article) throw new GeoStateError("not_found", "当前工作区没有此文章", 404);
+        const channel = params.channel ?? "manual";
+        if (channel !== "manual") throw new GeoStateError("publish_forbidden", "仅允许写入人工审核队列", 403);
         const publicationId = this.store.createPublication({
           articleId: article.id,
-          channel: params.channel ?? "manual",
-          receipt: { queuedBy: "geo_queue.emit", scope },
+          channel,
+          receipt: { queuedBy: "geo_queue.emit", scope: installation },
         });
         return {
-          result: { publicationId, articleId: article.id, channel: params.channel ?? "manual" },
-          receipt: { synced: true, mode: "real", verified_at: new Date().toISOString() },
+          result: { publicationId, articleId: article.id, channel, status: "queued" },
+          receipt: { synced: true, mode: "real", snapshot_uri: `geo-evidence://queue/${publicationId}`, verified_at: new Date().toISOString() },
         };
       }
       case "rpa.source_publish": {
-        const published = await this.publishArticle({
-          articleId: params.articleId,
-          channel: params.channel ?? "local",
-          webhookUrl: params.webhookUrl,
-          approvedBy: params.approvedBy,
-        });
         return {
-          result: published,
-          receipt: {
-            synced: published.status === "published",
-            snapshot_uri: published.url,
-            verified_at: new Date().toISOString(),
-            mode: "real",
-          },
+          result: { state: "review-required", scope: installation },
+          receipt: { synced: false, mode: "real" },
         };
       }
       case "archive.write_back": {
+        if (Object.keys(params).length !== 1 || !Object.hasOwn(params, "articleId")) {
+          throw new GeoStateError("invalid_input", "归档只接受一个已存文章的 articleId", 400);
+        }
+        const archive = this.store.archiveArticle(params.articleId, installation);
         return {
-          result: { state: "archived", scope, params },
-          receipt: { synced: true, mode: "real", verified_at: new Date().toISOString() },
+          result: { state: "archived", scope: installation, ...archive },
+          receipt: {
+            synced: true,
+            mode: "real",
+            snapshot_uri: `geo-evidence://archive/${archive.archiveId}`,
+            verified_at: archive.archivedAt,
+          },
         };
       }
       default:
         return {
-          result: { state: "connector-required", tool: name, scope },
+          result: { state: "connector-required", tool: name, scope: installation },
           receipt: { synced: false, mode: "real" },
         };
     }

@@ -1,8 +1,10 @@
-# GeoEvidence Studio
+# GeoEvidence Studio Test
 
 **把“AI 有没有提到我们、引用了谁、有没有负面”变成一套可复核、可复盘、可持续优化的 GEO 经营系统。**
 
 [English README](README.en.md) · [客户业务负责人使用指南](docs/客户业务负责人使用指南.md) · [未来前台实施方案](docs/未来前台客户交付方案.md)
+
+这是 GeoEvidence Studio 的独立 Super-agent 验证副本。研究任务可以在原线程补充材料、按需查看原文，并复核各轮搜索、抓取及报告回执。详见[研究任务工作台](apps/geo-evidence-studio/README-superagent.md)。
 
 ![GeoEvidence Studio 看板](outputs/geo-evidence-studio/geo-evidence-dashboard.png)
 
@@ -114,7 +116,7 @@ flowchart LR
 - 品牌提及率、引用率和负面率；
 - 品牌负面问题清单；
 - 10 类内容主题和文章草案；
-- 至少一条本地或 webhook 发布回执。
+- 人工复核后的本地导出回执。
 
 ### 每周
 
@@ -159,9 +161,9 @@ flowchart LR
 4. 调整下一月问题优先级。
 5. 决定是否扩展到更多平台和信源。
 
-## 六、当前 v0.1.0 的真实能力
+## 六、原仓 v0.1.0 能力与本副本范围
 
-### 已经跑通
+### 原仓历史验证及本副本范围
 
 - 未来前台 100 条问题集；
 - DeepSeek Search + Chat 真实采集；
@@ -170,7 +172,7 @@ flowchart LR
 - 行业负面与品牌负面分离；
 - 对“无法判断/缺少证据”的误报过滤；
 - 10 类文章草案；
-- 本地发布和 webhook 发布回执；
+- 人工复核后本地 Markdown 导出；本副本禁用 webhook 外发；
 - WorkLoom GEO 工具桥；
 - 桌面和移动端看板；
 - Chrome 真机走查与 GitHub CI。
@@ -179,7 +181,7 @@ flowchart LR
 
 当前是单客户试点版，适合：
 
-- 先跑 DeepSeek 真实基线和后续复测；
+- 使用研究任务工作台做公开 DeepSeek 取证；观测基线可用夹具或人工导入样本；
 - 其他平台先人工采集后导入；
 - 先由客户审核并人工发布到官网或内容平台；
 - 用本地 SQLite 和独立实例完成试点。
@@ -218,23 +220,13 @@ node apps/geo-evidence-studio/cli.mjs serve \
   --db var/geo-evidence-demo.sqlite
 ```
 
-打开：`http://127.0.0.1:4317`
+打开：`http://127.0.0.1:14317`
 
-### 真实 DeepSeek 采集
+### 真实 DeepSeek 公开研究
 
-```bash
-# 先在当前 shell 中安全设置 DEEPSEEK_API_KEY，不要把密钥写进仓库
-export DEEPSEEK_API_KEY
+为本机服务进程提供 `DEEPSEEK_API_KEY` 和独立的 `GEO_STUDIO_TEST_TOKEN`，启动后在「研究任务工作台」输入本机访问令牌。填写明确的公开搜索词并确认研究材料可公开。默认请求模型 `deepseek-flash`，再按任务保存官方 Search、Fetch 和 Chat 回执。两项凭据通过环境注入，服务和数据库不保存凭据值。
 
-node apps/geo-evidence-studio/cli.mjs run \
-  --provider deepseek-search \
-  --limit 8 \
-  --query-id ffd-brand-001 \
-  --query-id ffd-category-021 \
-  --db var/geo-evidence-live.sqlite
-```
-
-凭据只通过环境变量读取，不写入数据库、证据或日志。
+[启动与接口说明](apps/geo-evidence-studio/README-superagent.md)
 
 ## 八、指标怎么看
 
@@ -275,8 +267,8 @@ node apps/geo-evidence-studio/cli.mjs run \
 
 当前支持：
 
-- 本地 Markdown 发布；
-- 通用 webhook 发布。
+- 人工核对后用本地 CLI 导出 Markdown 并保存 SHA-256 回执；
+- WorkLoom 桥接只入人工审核队列；调用方自报审批不会触发发布。
 
 知乎、公众号、官网 CMS 的真实发布适配器仍按客户账号逐项接入。
 
@@ -301,11 +293,33 @@ bundles/geo-growth/connectors/geo-evidence/executor.mjs
 配置：
 
 ```bash
-export GEO_EVIDENCE_STUDIO_URL="http://127.0.0.1:4317"
-export GEO_EVIDENCE_STUDIO_TOKEN="可选的本地访问令牌"
+export GEO_EVIDENCE_STUDIO_TEST_URL="http://127.0.0.1:14317"
+export GEO_EVIDENCE_STUDIO_TEST_TOKEN="可选的本地访问令牌"
 ```
 
 工具失败时返回 `receipt.synced=false`，不会伪造成功回执。
+
+<!-- CAPABILITIES:BEGIN -->
+<!-- 本区块由 scripts/generate-capabilities.mjs 自动生成（2026-11-03），请勿手改；重跑 pnpm capabilities 更新 -->
+
+## 代码与资产速览（自动生成）
+
+本导览检查 manifest、脚本和文件入口。目录可发现、实际可调用、结果已验证分别记录；缺少同提交独立运行证据时后两项为未验证。岗位、技能与管线数是声明资产数，不是生产实测通过数。
+
+- 🖥 **三端应用入口**：PC 工作台 · 员工移动工作台 · 客户 H5 服务前台
+- 🔎 **GEO 研究任务工作台**：公开取证与历史轮次
+- 📦 **行业包声明资产**：bundles/ai-video/ · bundles/geo-growth/ · bundles/hotel/
+- 🧑‍💼 **岗位与交互入口**：数字员工中心（`/agents`） · 织伴数字人组件 · 语音与口型引擎
+- 🖐 **电脑操作接口**：浏览器与桌面驱动接口 · HTTP / MCP 工位入口
+- ⚙ **共享基础模块（目录存在性）**：围栏判定 · 技能分发组件 · 任务编排基础组件 · 夜班状态与调度 · 模型路由与用量记录 · 发布适配层（默认演练） 等 15 项
+- 🎬 **内容生产专用入口**：视频工位 · 媒资与交付 · 白板与口播解释片
+- ✅ **验证与维护命令**：环境安装脚本 · 主测试套件 · GEO 域套件 · 酒店域套件 · 发布门禁 · 五元事件验链 等 8 项
+- 📚 **演示与说明资产**：静态演示原型 ×12 · 官网静态页面 · official 技能目录 ×9 · 历史能力导览 PPT · 模拟数据说明
+
+本仓 manifest 共声明 **85 条岗位定义、94 项技能路径、11 条管线**；岗位按 `preset_key` 去重为 **81 个不同标识**。实际组合以主包与装配器为准。
+
+完整来源与边界见 [自动导览](docs/capabilities.auto.md) 和 [机器清单](docs/capabilities.auto.json)；首次体验按下文“快速开始”准备隔离环境。
+<!-- CAPABILITIES:END -->
 
 ## 十一、项目目录
 
@@ -329,7 +343,7 @@ docs/
   REAL-DEVICE-TEST.md
 ```
 
-## 十二、当前验证结果
+## 十二、原仓历史验证结果
 
 - 自动测试：11/11 通过；
 - 100 条夹具链路：100/100 成功；
@@ -341,7 +355,7 @@ docs/
 - Google Chrome 桌面与移动端：无控制台错误、无横向溢出；
 - GitHub Actions：成功。
 
-详细证据见 [真机测试记录](docs/REAL-DEVICE-TEST.md)。
+这些数字属于原仓 v0.1.0 历史样本，不表示本副本的取证效果。详见[原仓真机测试记录](docs/REAL-DEVICE-TEST.md)和[本副本验证方法](apps/geo-evidence-studio/README-superagent.md)。
 
 ## 十三、边界
 

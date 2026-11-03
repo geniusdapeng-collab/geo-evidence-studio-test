@@ -3,6 +3,22 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { CASE_VERSION, FUTURE_FRONTDESK_CASE, buildFutureFrontdeskQueries, sha256 } from "./core.mjs";
+import { GeoStateError, GeoSuperagentStore, requireGeoId } from "./superagent-store.mjs";
+
+const installationFields = ["tenantId", "workspaceId", "projectId"];
+const defaultInstallation = { tenantId: "local", workspaceId: "local", projectId: FUTURE_FRONTDESK_CASE.id };
+
+export function normalizeInstallationScope(scope = defaultInstallation) {
+  return Object.fromEntries(installationFields.map((field) => [field, requireGeoId(scope?.[field], field)]));
+}
+
+export function assertInstallationScope(scope, installationScope, { requireProject = false } = {}) {
+  const fields = requireProject || scope?.projectId !== undefined ? installationFields : installationFields.slice(0, 2);
+  if (fields.some((field) => scope?.[field] !== installationScope[field])) {
+    throw new GeoStateError("scope_forbidden", "请求范围与本地工作区绑定不一致", 403);
+  }
+  return installationScope;
+}
 
 function now() {
   return new Date().toISOString();
@@ -22,19 +38,26 @@ function parseJson(value, fallback = null) {
 }
 
 export function defaultDatabasePath(root = process.cwd()) {
-  return resolve(root, "var/geo-evidence-studio/geo-evidence.sqlite");
+  return resolve(root, "var/geo-evidence-studio-test.sqlite");
 }
 
 export class GeoStore {
-  constructor(databasePath = defaultDatabasePath()) {
-    this.path = resolve(databasePath);
-    mkdirSync(dirname(this.path), { recursive: true });
+  constructor(databasePath = defaultDatabasePath(), { installationScope, clock } = {}) {
+    this.path = databasePath === ":memory:" ? databasePath : resolve(databasePath);
+    if (this.path !== ":memory:") mkdirSync(dirname(this.path), { recursive: true });
     this.db = new DatabaseSync(this.path);
-    this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-    this.initialize();
+    try {
+      this.db.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+      this.initialize(installationScope);
+      this.superagent = new GeoSuperagentStore(this.db, { clock });
+      this.setMeta("schema_version", "2");
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
-  initialize() {
+  initialize(installationScope) {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (
         key TEXT PRIMARY KEY,
@@ -133,9 +156,26 @@ export class GeoStore {
         status TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS local_article_archives (
+        id TEXT PRIMARY KEY,
+        article_id TEXT NOT NULL UNIQUE REFERENCES articles(id),
+        content_sha256 TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
     `);
-    this.setMeta("schema_version", "1");
+    const configuredScope = installationScope === undefined ? undefined : normalizeInstallationScope(installationScope);
+    this.db.prepare("INSERT INTO meta (key, value) VALUES ('installation_scope', ?) ON CONFLICT(key) DO NOTHING")
+      .run(asJson(configuredScope ?? defaultInstallation));
+    const boundScope = normalizeInstallationScope(JSON.parse(this.getMeta("installation_scope")));
+    if (configuredScope) assertInstallationScope(configuredScope, boundScope, { requireProject: true });
+    this.installationScope = Object.freeze(boundScope);
     this.seedCase();
+  }
+
+  assertInstallationScope(scope, options) {
+    return assertInstallationScope(scope, this.installationScope, options);
   }
 
   setMeta(key, value) {
@@ -437,6 +477,41 @@ export class GeoStore {
   getArticle(id) {
     const row = this.db.prepare("SELECT * FROM articles WHERE id=?").get(id);
     return row ? { ...row, queryIds: parseJson(row.query_ids_json, []) } : null;
+  }
+
+  archiveArticle(articleId, scope) {
+    this.assertInstallationScope(scope);
+    requireGeoId(articleId, "articleId");
+    const article = this.getArticle(articleId);
+    if (!article) throw new GeoStateError("not_found", "当前工作区没有此文章", 404);
+    const snapshot = {
+      schemaVersion: "geo-local-archive/v1",
+      articleId,
+      scope: this.installationScope,
+      title: article.title,
+      slug: article.slug,
+      markdown: article.markdown,
+      queryIds: article.queryIds,
+      dataMode: article.data_mode,
+    };
+    if (!["draft", "imported", "real"].includes(article.data_mode) || Buffer.byteLength(article.markdown) > 1024 * 1024) {
+      throw new GeoStateError("archive_forbidden", "模拟文章或超出大小限制的文章不能归档", 422);
+    }
+    const contentHash = sha256(article.markdown);
+    if (contentHash !== article.evidence_hash) {
+      throw new GeoStateError("archive_integrity", "文章内容与存储的散列不一致");
+    }
+    this.db.prepare(`
+      INSERT INTO local_article_archives (id, article_id, content_sha256, snapshot_json, created_at)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT(article_id) DO NOTHING
+    `).run(`archive-${randomUUID()}`, articleId, contentHash, asJson(snapshot), now());
+    const archived = this.db.prepare(`
+      SELECT id, content_sha256, created_at FROM local_article_archives WHERE article_id=?
+    `).get(articleId);
+    if (archived.content_sha256 !== contentHash) {
+      throw new GeoStateError("archive_integrity", "归档内容与当前文章散列不一致");
+    }
+    return { archiveId: archived.id, articleId, contentSha256: archived.content_sha256, archivedAt: archived.created_at };
   }
 
   createPublication({ articleId, channel, status = "queued", receipt = {} }) {

@@ -64,6 +64,8 @@ importers:
         specifier: npm:yaml@2.9.0
         version: yaml@2.9.0
 
+  apps/geo-evidence-studio: {}
+
   apps/server:
     dependencies:
       '@hono/node-server':

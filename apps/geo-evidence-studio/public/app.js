@@ -8,6 +8,34 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 const pct = (value) => value === null || value === undefined ? "N/A" : `${(value * 100).toFixed(1)}%`;
+let apiToken = "";
+let identityRevision = 0;
+
+export function studioAuthHeaders() {
+  return apiToken ? { authorization: `Bearer ${apiToken}` } : {};
+}
+
+export function evidenceUrl(value) {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url : null;
+  } catch { return null; }
+}
+
+export function updateStudioToken(value) {
+  if (apiToken !== value) {
+    apiToken = value;
+    identityRevision += 1;
+    Object.assign(state, { summary: null, samples: [], queries: [], articles: [] });
+    for (const selector of ["#stats", "#category-chart", "#runs", "#samples", "#incidents", "#articles", "#queries", "#incident-count", "#query-count"]) $(selector).replaceChildren();
+    $("#case-name").textContent = "正在更新连接…";
+    $("#run-note").textContent = "正在重新读取看板。";
+    clearTimeout(toast.timer);
+    $("#toast").classList.remove("show", "error");
+  }
+  void refresh().catch((error) => toast(error.message, true));
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -30,10 +58,10 @@ function toast(message, error = false) {
 async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
-    headers: { "content-type": "application/json", ...(options.headers ?? {}) },
+    headers: { "content-type": "application/json", ...studioAuthHeaders(), ...(options.headers ?? {}) },
   });
   const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error ?? `HTTP ${response.status}`);
+  if (!response.ok) throw new Error(response.status === 401 ? "请在研究任务工作台更新本地服务访问令牌。" : payload.error ?? `HTTP ${response.status}`);
   return payload;
 }
 
@@ -97,6 +125,10 @@ function renderSamples() {
     ? rows.map((sample) => {
         const a = sample.analysis ?? {};
         const citations = a.citations ?? [];
+        const links = citations.slice(0, 3).map((citation) => {
+          const url = evidenceUrl(citation.url);
+          return url ? `<a href="${escapeHtml(url.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(citation.domain || url.hostname)}</a>` : "";
+        }).join("");
         return `<tr>
           <td>
             <div class="query">${escapeHtml(sample.query_text)}</div>
@@ -105,7 +137,7 @@ function renderSamples() {
           <td><span class="pill">${escapeHtml(sample.platform)}</span><div class="meta">${escapeHtml(sample.dataMode ?? sample.data_mode)}</div></td>
           <td><span class="status-dot ${a.brandMentioned ? "yes" : "no"}"></span> ${a.brandMentioned ? "已提及" : "未提及"}${a.ambiguousMentions?.length ? `<div class="meta">${a.ambiguousMentions.length} 个歧义别名</div>` : ""}</td>
           <td><span class="status-dot ${a.brandNegative ? "bad" : a.sentiment === "positive" ? "yes" : "no"}"></span> ${escapeHtml(a.sentiment ?? "unknown")}</td>
-          <td><div class="citation-list">${citations.slice(0, 3).map((citation) => `<a href="${escapeHtml(citation.url)}" target="_blank" rel="noreferrer">${escapeHtml(citation.domain || "source")}</a>`).join("") || `<span class="muted">无解析引用</span>`}</div></td>
+          <td><div class="citation-list">${links || `<span class="muted">无解析引用</span>`}</div></td>
           <td><span class="pill">${sample.evidence_hash ? "hash" : "missing"}</span></td>
         </tr>`;
       }).join("")
@@ -156,13 +188,16 @@ function renderQueries(queries) {
 }
 
 async function refresh() {
-  const [summary, samples, queries, articles, publications] = await Promise.all([
-    api("/api/summary"),
-    api("/api/samples?limit=500"),
-    api("/api/queries"),
-    api("/api/articles"),
-    api("/api/publications"),
-  ]);
+  const revision = identityRevision;
+  let snapshot;
+  try {
+    snapshot = await Promise.all([api("/api/summary"), api("/api/samples?limit=500"), api("/api/queries"), api("/api/articles"), api("/api/publications")]);
+  } catch (error) {
+    if (revision === identityRevision) throw error;
+    return;
+  }
+  if (revision !== identityRevision) return;
+  const [summary, samples, queries, articles, publications] = snapshot;
   state.summary = summary;
   state.samples = samples.samples;
   state.queries = queries.queries;

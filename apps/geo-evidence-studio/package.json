@@ -1,9 +1,9 @@
 {
-  "name": "@geo-evidence-studio/app",
+  "name": "@geo-evidence-studio-test/app",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Local-first, evidence-first GEO operations studio",
+  "description": "Local-first, evidence-first GEO operations test studio",
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test test/*.test.mjs"

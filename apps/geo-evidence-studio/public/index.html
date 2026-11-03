@@ -4,9 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
-    <title>GeoEvidence Studio</title>
+    <title>GeoEvidence Studio Test</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/superagent.css" />
   </head>
   <body>
     <div class="ambient ambient-a"></div>
@@ -15,7 +16,7 @@
       <div class="brand-mark" aria-hidden="true">GE</div>
       <div>
         <p class="eyebrow">Evidence-first GEO operations</p>
-        <h1>GeoEvidence Studio</h1>
+        <h1>GeoEvidence Studio Test</h1>
       </div>
       <div class="case-chip">
         <span class="pulse"></span>
@@ -35,6 +36,78 @@
           <button id="run-fixture" class="button primary" type="button">运行夹具样本</button>
           <button id="generate-articles" class="button" type="button">生成文章草案</button>
         </div>
+      </section>
+
+      <section class="panel sa-panel" id="research-tasks" aria-labelledby="sa-title">
+        <div class="section-head sa-section-head">
+          <div>
+            <p class="eyebrow">Super-agent · 公开证据</p>
+            <h2 id="sa-title">研究任务工作台</h2>
+            <p class="muted">按讨论线程提交研究目标、追加线索并回看可追溯的证据。</p>
+          </div>
+          <span class="tag" id="sa-connection" role="status">连接中…</span>
+        </div>
+
+        <div class="sa-scope">
+          <p class="muted" id="sa-scope">正在读取工作范围…</p>
+          <form id="sa-thread-form" class="sa-inline-form">
+            <label for="sa-thread">讨论线程</label>
+            <input id="sa-thread" name="thread" type="text" value="geo-research" maxlength="256" required autocomplete="off" spellcheck="false" />
+            <button class="button ghost" type="submit">打开线程</button>
+          </form>
+          <details id="sa-auth" class="sa-auth">
+            <summary>连接受保护的本地服务</summary>
+            <form id="sa-token-form" class="sa-inline-form">
+              <label for="sa-token">本地服务访问令牌</label>
+              <input id="sa-token" type="password" autocomplete="off" spellcheck="false" />
+              <button class="button ghost" type="submit">更新连接</button>
+              <p class="muted">仅在本页内存使用。留空可清除已设置的访问令牌。</p>
+            </form>
+          </details>
+        </div>
+
+        <div class="sa-grid">
+          <div class="sa-column">
+            <form id="sa-request-form" class="sa-card sa-form">
+              <h3>发起公开研究</h3>
+              <label for="sa-request">研究目标</label>
+              <textarea id="sa-request" rows="4" required maxlength="24000" placeholder="例如：核对某项已公开的产品能力，给出官方来源与尚待确认的结论。" disabled></textarea>
+              <label for="sa-query">公开搜索词</label>
+              <input id="sa-query" maxlength="256" required autocomplete="off" placeholder="例如：产品名 公开文档" aria-describedby="sa-query-help" disabled />
+              <p class="muted" id="sa-query-help">搜索服务只接收明确填写的搜索词，最多 128 个字符。搜索只读取公开网页。研究目标和补充说明会发送给选定模型。</p>
+              <label class="sa-confirm"><input id="sa-public-request" type="checkbox" required disabled />我确认只提交可公开研究的材料</label>
+              <button class="button primary" id="sa-send-request" type="submit" disabled>提交研究任务</button>
+            </form>
+
+            <div class="sa-card sa-task-index">
+              <div class="sa-heading"><h3>线程任务</h3><button class="button ghost" id="sa-refresh" type="button">刷新</button></div>
+              <p class="muted" id="sa-list-status" role="status">正在读取任务…</p>
+              <div id="sa-task-list" class="sa-task-list" aria-label="当前线程任务列表"></div>
+            </div>
+          </div>
+
+          <div class="sa-column">
+            <div class="sa-card" id="sa-detail" aria-label="所选任务详情">
+              <p class="muted">选择一项任务后，可以查看进度、引用和执行回执。</p>
+            </div>
+            <form id="sa-followup-form" class="sa-card sa-form" hidden>
+              <h3>给当前任务补充线索</h3>
+              <label for="sa-followup">补充信息</label>
+              <textarea id="sa-followup" rows="3" required maxlength="24000" placeholder="仅填写可公开的补充依据或调整要求。"></textarea>
+              <label for="sa-followup-query">替换公开搜索词（可选）</label>
+              <input id="sa-followup-query" maxlength="256" autocomplete="off" placeholder="留空沿用上次明确填写的搜索词" />
+              <p class="muted">已完成任务接收补充后会排队生成新一轮研究。</p>
+              <label class="sa-confirm"><input id="sa-public-followup" type="checkbox" required />我确认只提交可公开研究的材料</label>
+              <button class="button primary" id="sa-send-followup" type="submit">提交补充</button>
+            </form>
+            <div class="sa-actions">
+              <button class="button" id="sa-resume" type="button" hidden>恢复任务</button>
+              <button class="button ghost" id="sa-watch" type="button" disabled>扫描过期执行</button>
+            </div>
+          </div>
+        </div>
+        <p id="sa-notice" class="sa-notice" role="status" hidden></p>
+        <p id="sa-error" class="sa-error" role="alert" hidden></p>
       </section>
 
       <section id="stats" class="stats" aria-label="GEO metrics"></section>
@@ -127,5 +200,6 @@
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script type="module" src="/app.js"></script>
+    <script type="module" src="/superagent.js"></script>
   </body>
 </html>

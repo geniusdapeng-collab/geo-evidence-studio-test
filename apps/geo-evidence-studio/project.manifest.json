@@ -1,11 +1,12 @@
 {
   "schemaVersion": "geo-evidence-studio.project/v1",
-  "id": "geo-evidence-studio",
-  "displayName": "GeoEvidence Studio",
-  "version": "0.1.0",
+  "id": "geo-evidence-studio-test",
+  "displayName": "GeoEvidence Studio Test",
+  "version": "0.2.0",
+  "repository": "geniusdapeng-collab/geo-evidence-studio-test",
   "license": "Apache-2.0",
   "status": "pilot",
-  "description": "Evidence-first GEO operations for AI answer visibility, citation intelligence, brand safety, content and source publishing.",
+  "description": "Evidence-first GEO operations for AI answer visibility, citation intelligence, brand safety, content drafts and public research.",
   "firstCase": {
     "id": "future-frontdesk",
     "displayName": "苏州未来前台 GEO 证据案例",
@@ -13,13 +14,11 @@
   },
   "providers": [
     "fixture",
-    "deepseek",
-    "deepseek-search",
+    "deepseek-flash-research",
     "manual-import"
   ],
   "publishers": [
-    "local",
-    "webhook"
+    "local"
   ],
   "workloom": {
     "upstreamRepository": "https://cnb.cool/workloom-ai/workloom",
