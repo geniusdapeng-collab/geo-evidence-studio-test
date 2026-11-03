@@ -98,25 +98,26 @@ test("HTTP API serves health, summary and fixtures securely on loopback", async 
   assert.match(await html.text(), /GeoEvidence Studio/);
 });
 
-test("WorkLoom tool bridge exposes declared GEO tools with real receipts", async (t) => {
+test("WorkLoom tool bridge scopes GEO receipts and rejects caller-approved publication", async (t) => {
   const root = await fixtureRoot(t);
   const bridgeSecret = randomUUID();
   const app = createGeoStudioServer({
     rootDir: root,
     dbPath: join(root, "bridge.sqlite"),
     token: bridgeSecret,
+    installationScope: { tenantId: "tenant-test", workspaceId: "workspace-test", projectId: "future-frontdesk" },
   });
   const address = await app.listen({ port: 0, host: "127.0.0.1" });
   t.after(() => app.close());
-  const oldUrl = process.env.GEO_EVIDENCE_STUDIO_URL;
-  const oldToken = process.env.GEO_EVIDENCE_STUDIO_TOKEN;
-  process.env.GEO_EVIDENCE_STUDIO_URL = `http://127.0.0.1:${address.port}`;
-  process.env.GEO_EVIDENCE_STUDIO_TOKEN = bridgeSecret;
+  const oldUrl = process.env.GEO_EVIDENCE_STUDIO_TEST_URL;
+  const oldToken = process.env.GEO_EVIDENCE_STUDIO_TEST_TOKEN;
+  process.env.GEO_EVIDENCE_STUDIO_TEST_URL = `http://127.0.0.1:${address.port}`;
+  process.env.GEO_EVIDENCE_STUDIO_TEST_TOKEN = bridgeSecret;
   t.after(() => {
-    if (oldUrl === undefined) delete process.env.GEO_EVIDENCE_STUDIO_URL;
-    else process.env.GEO_EVIDENCE_STUDIO_URL = oldUrl;
-    if (oldToken === undefined) delete process.env.GEO_EVIDENCE_STUDIO_TOKEN;
-    else process.env.GEO_EVIDENCE_STUDIO_TOKEN = oldToken;
+    if (oldUrl === undefined) delete process.env.GEO_EVIDENCE_STUDIO_TEST_URL;
+    else process.env.GEO_EVIDENCE_STUDIO_TEST_URL = oldUrl;
+    if (oldToken === undefined) delete process.env.GEO_EVIDENCE_STUDIO_TEST_TOKEN;
+    else process.env.GEO_EVIDENCE_STUDIO_TEST_TOKEN = oldToken;
   });
   const { createToolExecutorForScope, TOOL_PATTERNS } = await import(
     "../../../bundles/geo-growth/connectors/geo-evidence/executor.mjs"
@@ -139,6 +140,14 @@ test("WorkLoom tool bridge exposes declared GEO tools with real receipts", async
     channel: "local",
     approvedBy: "bridge-test",
   });
-  assert.equal(published.receipt.synced, true);
-  assert.equal(published.result.status, "published");
+  assert.equal(published.receipt.synced, false);
+  assert.equal(published.result.state, "review-required");
+  const archive = await execute("archive.write_back", { articleId });
+  assert.equal(archive.receipt.synced, true);
+  assert.match(archive.receipt.snapshot_uri, /^geo-evidence:\/\/archive\//);
+  const replay = await execute("archive.write_back", { articleId });
+  assert.equal(replay.receipt.snapshot_uri, archive.receipt.snapshot_uri);
+  const foreign = createToolExecutorForScope({ tenantId: "tenant-test", workspaceId: "other" });
+  assert.equal((await foreign("geo_queue.emit", { articleId })).receipt.synced, false);
+  assert.equal(app.store.listPublications(10).length, 0);
 });

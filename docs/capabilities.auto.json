@@ -2,10 +2,10 @@
  "schema": "workloom.capabilities/v2",
  "repo": "workloom-ai-acquisition",
  "productId": "workloom-ai-acquisition",
- "repository": "workloom-ai/workloom",
+ "repository": "geniusdapeng-collab/geo-evidence-studio-test",
  "displayName": "WorkLoom 获客增长系统",
  "description": "企业获客与内容运营工作系统：工作台、行业包声明、内容生产工位与共享治理组件。",
- "generatedAt": "2026-10-02T21:29:01.012Z",
+ "generatedAt": "2026-11-03T18:09:05.836Z",
  "evidenceNotice": "本导览检查 manifest、脚本和文件入口。目录可发现、实际可调用、结果已验证分别记录；缺少同提交独立运行证据时后两项为未验证。岗位、技能与管线数是声明资产数，不是生产实测通过数。",
  "bundleDeclarations": [
   {
@@ -227,6 +227,35 @@
     "apps/web/src/App.tsx",
     "apps/webb/src/App.tsx",
     "apps/webc/src/App.tsx"
+   ]
+  },
+  {
+   "icon": "🔎",
+   "title": "GEO 研究任务工作台",
+   "items": [
+    {
+     "name": "公开取证与历史轮次",
+     "how": "[启动与鉴权说明](../apps/geo-evidence-studio/README-superagent.md)",
+     "desc": "本机按线程补充研究；SQLite 留存证据、引用和模型用量。真实研究需单独配置凭据。",
+     "sourcePaths": [
+      "apps/geo-evidence-studio/server.mjs",
+      "apps/geo-evidence-studio/lib/superagent.mjs"
+     ],
+     "id": "cap:0c05be1202387046",
+     "availability": {
+      "discoverable": true,
+      "callable": "unverified",
+      "verified": "unverified",
+      "environment": null,
+      "lastSuccess": null,
+      "evidence": null,
+      "reason": "仅目录与入口元数据；没有对应运行证据"
+     }
+    }
+   ],
+   "sourcePaths": [
+    "apps/geo-evidence-studio/project.manifest.json",
+    "apps/geo-evidence-studio/README-superagent.md"
    ]
   },
   {

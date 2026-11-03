@@ -1,6 +1,8 @@
-# GeoEvidence Studio
+# GeoEvidence Studio Test
 
-[中文说明](README.md)
+[中文说明](README.md) · [Super-agent workbench guide](apps/geo-evidence-studio/README-superagent.md)
+
+This repository is an independent test copy. It adds scoped, resumable public evidence research with a revision history and reviewable DeepSeek receipts.
 
 **Evidence-first GEO operations for AI answer visibility, citation intelligence, brand safety, content and publishing.**
 
@@ -53,22 +55,11 @@ node apps/geo-evidence-studio/cli.mjs articles --db var/geo-evidence-demo.sqlite
 node apps/geo-evidence-studio/cli.mjs serve --db var/geo-evidence-demo.sqlite
 ```
 
-Open `http://127.0.0.1:4317`.
+Open `http://127.0.0.1:14317`.
 
-### Real DeepSeek search run
+### Real DeepSeek research
 
-```bash
-export DEEPSEEK_API_KEY="..."
-
-node apps/geo-evidence-studio/cli.mjs run \
-  --provider deepseek-search \
-  --limit 8 \
-  --query-id ffd-brand-001 \
-  --query-id ffd-category-021 \
-  --db var/geo-evidence-live.sqlite
-```
-
-The real collector calls the official DeepSeek Search and Chat endpoints, records search sources and writes one JSON evidence artifact per query under `outputs/geo-evidence-studio/evidence/<run-id>/`.
+Provide `DEEPSEEK_API_KEY` and a separate `GEO_STUDIO_TEST_TOKEN` to the local server process. Open the research workbench, supply the access token and enter an explicit public search query. The workbench uses official DeepSeek Search, Fetch and Chat endpoints and records per-task evidence and model usage. See the [workbench guide](apps/geo-evidence-studio/README-superagent.md).
 
 ## Metrics
 
@@ -117,20 +108,15 @@ Supported bridge tools include:
 Point WorkLoom at the local Studio:
 
 ```bash
-export GEO_EVIDENCE_STUDIO_URL="http://127.0.0.1:4317"
-export GEO_EVIDENCE_STUDIO_TOKEN="optional-local-bearer-token"
+export GEO_EVIDENCE_STUDIO_TEST_URL="http://127.0.0.1:14317"
+export GEO_EVIDENCE_STUDIO_TEST_TOKEN="optional-local-bearer-token"
 ```
 
 The connector returns `receipt.synced=false` on failure and never fabricates a successful external action.
 
 ## Publishing
 
-The open-source release supports:
-
-- `local`: writes Markdown and a SHA-256 publication receipt.
-- `webhook`: posts an approved article to a configured CMS or publishing endpoint.
-
-Draft publication requires `--approved-by`. Direct automatic publishing to social or source platforms remains adapter-specific because platform login, account authorization and platform rules cannot be safely generalized.
+A trusted local operator can export a reviewed draft to Markdown and obtain a SHA-256 receipt. HTTP and the WorkLoom bridge cannot publish externally. The bridge can create an item in the manual review queue; caller-supplied approval has no effect.
 
 ## Architecture
 
@@ -152,7 +138,7 @@ The Studio uses SQLite for local-first operation and can be embedded into WorkLo
 
 ## Repository status
 
-This is a `v0.1.0` implementation. It is suitable for a controlled first-client pilot with explicit provider and publishing adapters. It does not claim:
+This is the `v0.2.0` independent test copy. It supports controlled public research and reviewed local drafts. It does not claim:
 
 - that every AI consumer platform exposes the same citations;
 - that an answer can be forced to mention or omit a brand;

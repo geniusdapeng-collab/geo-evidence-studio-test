@@ -33,6 +33,10 @@ const demoPages = ls("docs/demo", (f) => f.endsWith(".html") && !["index.html", 
 const shots = ls("docs/demo/preview-shots", (f) => f.endsWith(".png"));
 // 按 manifest 统计所有包的声明；默认包由 product.manifest.json 指定。
 const productManifest = existsSync(join(ROOT, "product.manifest.json")) ? J("product.manifest.json") : {};
+const studioManifest = existsSync(join(ROOT, "apps/geo-evidence-studio/project.manifest.json"))
+  ? J("apps/geo-evidence-studio/project.manifest.json") : null;
+const repository = studioManifest?.repository ?? productManifest.repository;
+const repositoryHost = repository?.startsWith("geniusdapeng-collab/") ? "github.com" : "cnb.cool";
 const defaultBundle = bundles.includes(productManifest.defaultBundle) ? productManifest.defaultBundle : null;
 const bundleDeclarations = bundles.filter((b) => existsSync(join(ROOT, `bundles/${b}/bundle.json`))).map((b) => {
   const manifest = J(`bundles/${b}/bundle.json`);
@@ -67,6 +71,17 @@ groups.push({
     existsSync(join(ROOT, "apps/webc/package.json")) && { name: "客户 H5 服务前台", how: "隔离演示启动后：http://localhost:3002", desc: "对话/服务/工单/消息/我的；preview 脚本使用酒店服务夹具" },
   ].filter(Boolean),
 });
+
+if (has("geo:studio") && existsSync(join(ROOT, "apps/geo-evidence-studio/README-superagent.md"))) {
+  groups.push({
+    icon: "🔎", title: "GEO 研究任务工作台",
+    items: [{
+      name: "公开取证与历史轮次", how: "[启动与鉴权说明](../apps/geo-evidence-studio/README-superagent.md)",
+      desc: "本机按线程补充研究；SQLite 留存证据、引用和模型用量。真实研究需单独配置凭据。",
+      sourcePaths: ["apps/geo-evidence-studio/server.mjs", "apps/geo-evidence-studio/lib/superagent.mjs"],
+    }],
+  });
+}
 
 if (bundles.length) groups.push({
   icon: "📦", title: "行业包声明资产",
@@ -161,6 +176,7 @@ groups.push({ icon: "📚", title: "演示与说明资产", items: assets });
 
 const sourceSets = {
   "三端应用入口": ["product.manifest.json", "apps/web/src/App.tsx", "apps/webb/src/App.tsx", "apps/webc/src/App.tsx"],
+  "GEO 研究任务工作台": ["apps/geo-evidence-studio/project.manifest.json", "apps/geo-evidence-studio/README-superagent.md"],
   "行业包声明资产": bundleDeclarations.map((b) => b.sourcePath),
   "岗位与交互入口": ["apps/web/src/pages/p8/P8.tsx", "apps/web/src/components/loommate/LoomMate.tsx", "apps/web/src/voice/VoiceEngine.ts"],
   "电脑操作接口": ["packages/base/computer-use/driver.ts", "docs/computer-use-production.md"],
@@ -189,7 +205,7 @@ for (const group of groups) for (const item of group.items) {
   item.id = `cap:${createHash("sha256").update(`${group.title}/${item.name}`).digest("hex").slice(0, 16)}`;
   item.availability = capabilityStatus({ root: ROOT, id: item.id, discoverable: true, currentCommit, attestation: attestations.entries.find(entry => entry.id === item.id) });
 }
-const data = { schema: "workloom.capabilities/v2", repo: repoName, productId: productManifest.productId, repository: productManifest.repository, displayName: productManifest.displayName, description: desc, generatedAt: new Date().toISOString(), evidenceNotice, bundleDeclarations, declarationTotals: { ...declarationTotals, uniquePresetKeys }, demoPages, shots, groups };
+const data = { schema: "workloom.capabilities/v2", repo: repoName, productId: productManifest.productId, repository, displayName: productManifest.displayName, description: desc, generatedAt: new Date().toISOString(), evidenceNotice, bundleDeclarations, declarationTotals: { ...declarationTotals, uniquePresetKeys }, demoPages, shots, groups };
 
 // ---------- 生成 Markdown（人类版导览） ----------
 const declarationTable = `| 行业包 | 声明版本 | 状态 | 岗位定义 | 技能路径 | 管线 |\n|---|---|---|---:|---:|---:|\n${bundleDeclarations.map((b) => `| [${b.bundle}](../${b.sourcePath}) | ${b.version} | ${b.status} | ${b.presets} | ${b.skills} | ${b.pipelines} |`).join("\n")}\n| 声明合计 | — | — | ${declarationTotals.presets} | ${declarationTotals.skills} | ${declarationTotals.pipelines} |`;
@@ -199,7 +215,7 @@ const md = `# ${productManifest.displayName || repoName} · 代码与能力入�
 > ${desc}
 > 本文件由 [generate-capabilities.mjs](../scripts/generate-capabilities.mjs) 自动生成（${data.generatedAt.slice(0, 10)}）。请修改生成器或事实输入后重新生成，不手改本文件。
 > ${evidenceNotice}
-> 产品身份：\`${productManifest.productId}\`；默认包：\`${productManifest.defaultBundle}\`；仓库：[${productManifest.repository}](https://cnb.cool/${productManifest.repository})。
+> 产品身份：\`${productManifest.productId}\`；默认包：\`${productManifest.defaultBundle}\`；仓库：[${repository}](https://${repositoryHost}/${repository})。
 
 ## 从哪里开始
 

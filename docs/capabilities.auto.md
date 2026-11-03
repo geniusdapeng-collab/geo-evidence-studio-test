@@ -1,9 +1,9 @@
 # WorkLoom 获客增长系统 · 代码与能力入口导览
 
 > 企业获客与内容运营工作系统：工作台、行业包声明、内容生产工位与共享治理组件。
-> 本文件由 [generate-capabilities.mjs](../scripts/generate-capabilities.mjs) 自动生成（2026-10-02）。请修改生成器或事实输入后重新生成，不手改本文件。
+> 本文件由 [generate-capabilities.mjs](../scripts/generate-capabilities.mjs) 自动生成（2026-11-03）。请修改生成器或事实输入后重新生成，不手改本文件。
 > 本导览检查 manifest、脚本和文件入口。目录可发现、实际可调用、结果已验证分别记录；缺少同提交独立运行证据时后两项为未验证。岗位、技能与管线数是声明资产数，不是生产实测通过数。
-> 产品身份：`workloom-ai-acquisition`；默认包：`geo-growth`；仓库：[workloom-ai/workloom](https://cnb.cool/workloom-ai/workloom)。
+> 产品身份：`workloom-ai-acquisition`；默认包：`geo-growth`；仓库：[geniusdapeng-collab/geo-evidence-studio-test](https://github.com/geniusdapeng-collab/geo-evidence-studio-test)。
 
 ## 从哪里开始
 
@@ -26,7 +26,7 @@
 
 岗位文件的 `preset_key` 去重得到 **81 个不同标识**；这是本仓声明去重计数，实际依赖装配和同名权威归属以主包 `composition.presetOwners` 与 [装配器](../packages/base/bundles/assembly.ts) 为准。
 
-## 代码与资产入口（42 项）
+## 代码与资产入口（43 项）
 
 ### 🖥 三端应用入口
 
@@ -37,6 +37,14 @@
 | **PC 工作台** | 任务、岗位、报告、行业入口；可见内容受权限和活动行业包影响 | 隔离演示启动后：http://localhost:3000 | 是 | 未验证 | 未验证 |
 | **员工移动工作台** | React 员工移动应用；与 docs/demo 的历史静态原型分开看 | 隔离演示启动后：http://localhost:3001 | 是 | 未验证 | 未验证 |
 | **客户 H5 服务前台** | 对话/服务/工单/消息/我的；preview 脚本使用酒店服务夹具 | 隔离演示启动后：http://localhost:3002 | 是 | 未验证 | 未验证 |
+
+### 🔎 GEO 研究任务工作台
+
+来源：[apps/geo-evidence-studio/project.manifest.json](../apps/geo-evidence-studio/project.manifest.json) · [apps/geo-evidence-studio/README-superagent.md](../apps/geo-evidence-studio/README-superagent.md)。
+
+| 入口 | 用途与边界 | 查阅或运行 | 可发现 | 可调用 | 结果已验证 / 环境 |
+|---|---|---|---|---|---|
+| **公开取证与历史轮次** | 本机按线程补充研究；SQLite 留存证据、引用和模型用量。真实研究需单独配置凭据。 | [启动与鉴权说明](../apps/geo-evidence-studio/README-superagent.md) | 是 | 未验证 | 未验证 |
 
 ### 📦 行业包声明资产
 

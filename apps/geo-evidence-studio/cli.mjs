@@ -1,8 +1,10 @@
 import { resolve } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
-import { GeoStore, defaultDatabasePath } from "./lib/store.mjs";
+import { GeoStore } from "./lib/store.mjs";
 import { GeoEvidenceService } from "./lib/service.mjs";
 import { createGeoStudioServer } from "./server.mjs";
+import { installationOptions, STUDIO_HOST, STUDIO_PORT } from "./lib/installation.mjs";
+import { scanGeoSuperagent } from "./lib/superagent.mjs";
 
 function parseArgs(argv) {
   const result = { _: [] };
@@ -12,7 +14,10 @@ function parseArgs(argv) {
       result._.push(item);
       continue;
     }
-    const [rawKey, inline] = item.slice(2).split("=", 2);
+    const raw = item.slice(2);
+    const equal = raw.indexOf("=");
+    const rawKey = equal < 0 ? raw : raw.slice(0, equal);
+    const inline = equal < 0 ? undefined : raw.slice(equal + 1);
     const key = rawKey.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
     if (inline !== undefined) {
       result[key] = inline;
@@ -39,23 +44,24 @@ function print(value) {
 }
 
 function usage() {
-  console.log(`GeoEvidence Studio
+  console.log(`GeoEvidence Studio Test
 
 Usage:
   node apps/geo-evidence-studio/cli.mjs init [--db PATH]
-  node apps/geo-evidence-studio/cli.mjs run [--provider fixture|deepseek|deepseek-search|manual-import]
+  node apps/geo-evidence-studio/cli.mjs run [--provider fixture|manual-import]
       [--limit 20] [--category brand] [--query-id ID]... [--file answers.jsonl]
       [--concurrency 2] [--db PATH]
   node apps/geo-evidence-studio/cli.mjs articles [--topic selection-guide] [--force]
-  node apps/geo-evidence-studio/cli.mjs publish --article-id ID [--channel local|webhook]
-      [--webhook-url URL] --approved-by NAME
+  node apps/geo-evidence-studio/cli.mjs publish --article-id ID --channel local --approved-by NAME
   node apps/geo-evidence-studio/cli.mjs report [--run-id ID] [--out DIR]
   node apps/geo-evidence-studio/cli.mjs reanalyze --run-id ID
   node apps/geo-evidence-studio/cli.mjs export-queries [--out FILE]
-  node apps/geo-evidence-studio/cli.mjs serve [--port 4317] [--host 127.0.0.1]
+  node apps/geo-evidence-studio/cli.mjs serve [--port 14317] [--host 127.0.0.1]
+  node apps/geo-evidence-studio/cli.mjs superagent-watch [--db PATH]
 
 Notes:
-  - Real DeepSeek calls require DEEPSEEK_API_KEY in the environment.
+  - Use the local Super-agent workbench for real public research. Configure DEEPSEEK_API_KEY
+    and a separate GEO_STUDIO_TEST_TOKEN in the serving process.
   - Fixture results are explicitly labelled and never count as production evidence.
 `);
 }
@@ -71,8 +77,7 @@ function queryIds(args) {
 
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0] ?? "help";
-const rootDir = resolve(args.root ?? process.cwd());
-const dbPath = resolve(args.db ?? defaultDatabasePath(rootDir));
+const { rootDir, dbPath, installationScope } = installationOptions({ rootDir: args.root, dbPath: args.db });
 
 if (command === "help" || args.help) {
   usage();
@@ -80,14 +85,16 @@ if (command === "help" || args.help) {
 }
 
 if (command === "serve") {
-  const app = createGeoStudioServer({ rootDir, dbPath });
-  const host = args.host ?? "127.0.0.1";
-  const port = number(args.port, 4317);
-  const address = await app.listen({ host, port });
-  console.log(`GeoEvidence Studio: http://${host}:${address.port}`);
-  console.log(`SQLite: ${app.dbPath}`);
+  const app = createGeoStudioServer({ rootDir, dbPath, installationScope });
+  const host = args.host ?? process.env.GEO_STUDIO_TEST_HOST ?? STUDIO_HOST;
+  const port = Number(args.port ?? process.env.GEO_STUDIO_TEST_PORT ?? STUDIO_PORT);
+  try {
+    const address = await app.listen({ host, port });
+    console.log(`GeoEvidence Studio Test: http://localhost:${address.port}`);
+  } catch (error) { await app.close(); throw error; }
+  for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => app.close().catch(() => { process.exitCode = 1; }));
 } else {
-  const store = new GeoStore(dbPath);
+  const store = new GeoStore(dbPath, { installationScope });
   const service = new GeoEvidenceService(store, { rootDir });
   try {
     if (command === "init") {
@@ -96,7 +103,13 @@ if (command === "serve") {
         queryCount: store.listQueries({ limit: 1000 }).length,
         case: "future-frontdesk",
       });
+    } else if (command === "superagent-watch") {
+      print(scanGeoSuperagent(store.superagent, installationScope));
     } else if (command === "run") {
+      if (args.provider && !["fixture", "manual-import"].includes(args.provider)) {
+        throw new Error("真实 DeepSeek 任务通过本机证据任务工作台执行");
+      }
+      if (args.baseUrl || args.model) throw new Error("旧采集入口不允许自定义模型或服务地址");
       const result = await service.runObservations({
         provider: args.provider ?? "fixture",
         limit: number(args.limit, 20),
@@ -105,8 +118,6 @@ if (command === "serve") {
         file: args.file,
         concurrency: number(args.concurrency, 2),
         platform: args.platform,
-        model: args.model,
-        baseUrl: args.baseUrl,
       });
       print(result);
     } else if (command === "articles") {
@@ -120,7 +131,6 @@ if (command === "serve") {
       print(await service.publishArticle({
         articleId: args.articleId,
         channel: args.channel ?? "local",
-        webhookUrl: args.webhookUrl,
         approvedBy: args.approvedBy,
       }));
     } else if (command === "report") {
