@@ -12,6 +12,8 @@ const endpoints = {
 const searchCount = 5;
 const maxResponseBytes = 2_000_000;
 const maxExcerptBytes = 10_000;
+// This scene emits a bounded research digest with at most 12 claims.
+const reportOutputTokens = 2500;
 const controls = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 const secretPattern = /\b(?:(?:sk-|gh[pousr]_|github_pat_|xox[baprs]-)[A-Za-z0-9_-]{16,}|(?:AKIA|ASIA)[A-Z0-9]{16}|bearer[ \t]+[A-Za-z0-9._~+/-]{16,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b|-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/iu;
 const privateContact = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+|(?<![0-9a-z])(?:\d{6}[ -]*(?:19|20)\d{2}[ -]*(?:0[1-9]|1[0-2])[ -]*(?:0[1-9]|[12]\d|3[01])[ -]*\d{3}[ -]*[\dx]|1[3-9]\d(?:[ -]?\d{4}){2})(?![0-9a-z])/iu;
@@ -140,8 +142,10 @@ function responseIdentity(value, apiKey) {
   return typeof value === "string" && receiptIdPattern.test(value) && !hasSecret(value, apiKey) ? value : null;
 }
 
+const measured = (n) => Number.isSafeInteger(n) && n >= 0;
+
 function usageReceipt(value) {
-  const measured = (n) => Number.isSafeInteger(n) && n >= 0;
+  if (!record(value)) return undefined;
   const promptTokens = value?.prompt_tokens;
   const completionTokens = value?.completion_tokens;
   const totalTokens = value?.total_tokens;
@@ -154,7 +158,30 @@ function usageReceipt(value) {
     usage.promptCacheHitTokens = hit;
     usage.promptCacheMissTokens = miss;
   }
+  const reasoning = value.completion_tokens_details?.reasoning_tokens;
+  if (measured(reasoning) && reasoning <= completionTokens) usage.reasoningTokens = reasoning;
   return usage;
+}
+
+// Preserve valid top-level accounting even when optional breakdowns invalidate the result.
+function validUsageDetails(value) {
+  const hit = value.prompt_cache_hit_tokens;
+  const miss = value.prompt_cache_miss_tokens;
+  if ((Object.hasOwn(value, "prompt_cache_hit_tokens") || Object.hasOwn(value, "prompt_cache_miss_tokens"))
+    && (!measured(hit) || !measured(miss) || hit + miss !== value.prompt_tokens)) return false;
+  if (Object.hasOwn(value, "prompt_tokens_details")) {
+    if (!record(value.prompt_tokens_details)) return false;
+    const cached = value.prompt_tokens_details.cached_tokens;
+    if (Object.hasOwn(value.prompt_tokens_details, "cached_tokens")
+      && (!measured(cached) || cached > value.prompt_tokens || (hit !== undefined && cached !== hit))) return false;
+  }
+  if (Object.hasOwn(value, "completion_tokens_details")) {
+    if (!record(value.completion_tokens_details)) return false;
+    const reasoning = value.completion_tokens_details.reasoning_tokens;
+    if (Object.hasOwn(value.completion_tokens_details, "reasoning_tokens")
+      && (!measured(reasoning) || reasoning > value.completion_tokens)) return false;
+  }
+  return true;
 }
 
 function exactKeys(object, keys) {
@@ -230,12 +257,20 @@ export function createGeoSuperAgentDeepSeek(options = {}) {
     try {
       const response = await withAbort(() => {
         dispatched = true;
-        return transport(url, {
+        return Promise.resolve(transport(url, {
           method: "POST",
           redirect: "error",
           signal,
           headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
           body: encoded,
+        })).then((response) => {
+          // An injected or platform transport can resolve after our deadline race has ended.
+          // Release that unread response too; it cannot be used as a completed receipt.
+          if (signal.aborted) {
+            void response.body?.cancel().catch(() => undefined);
+            throw signal.reason;
+          }
+          return response;
         });
       }, signal);
       if (response.redirected || (response.url && response.url !== url)) {
@@ -342,7 +377,9 @@ export function createGeoSuperAgentDeepSeek(options = {}) {
       const safeGoal = validatedText(goal, 12_000, apiKey);
       if (!safeGoal || privateContact.test(safeGoal) || !Array.isArray(followups) || followups.length > 3
         || evidence?.provider !== "deepseek" || !Array.isArray(evidence.sources)
-        || !evidence.sources.length || evidence.sources.length > 3) throw invalid();
+        || evidence.sources.length !== 1 || !record(evidence.fetch)
+        || evidence.fetch.status !== 200 || !hashPattern.test(evidence.fetch.requestSha256)
+        || !hashPattern.test(evidence.fetch.responseSha256)) throw invalid();
       const safeFollowups = followups.map((item) => {
         const text = validatedText(typeof item === "string" ? item : item?.text, 10_000, apiKey);
         if (!text || privateContact.test(text)) throw invalid();
@@ -353,7 +390,9 @@ export function createGeoSuperAgentDeepSeek(options = {}) {
         const url = canonicalPublicUrl(source?.url, apiKey)?.href;
         const title = validatedText(source?.title, 1024, apiKey);
         const excerpt = validatedText(source?.excerpt, maxExcerptBytes, apiKey);
-        if (!url || !title || !excerpt || privateContact.test(title) || privateContact.test(excerpt) || typeof source.contentSha256 !== "string" || !hashPattern.test(source.contentSha256)
+        if (!url || !title || !excerpt || evidence.fetch.url !== url
+          || evidence.fetch.requestSha256 !== sha256(JSON.stringify({ url }))
+          || privateContact.test(title) || privateContact.test(excerpt) || typeof source.contentSha256 !== "string" || !hashPattern.test(source.contentSha256)
           || source.sourceId !== sourceId(url, source.contentSha256) || verifiedSources.has(source.sourceId)
           || source.excerptSha256 !== sha256(excerpt)) throw invalid();
         verifiedSources.add(source.sourceId);
@@ -367,21 +406,28 @@ export function createGeoSuperAgentDeepSeek(options = {}) {
         ],
         thinking: { type: "disabled" },
         response_format: { type: "json_object" },
-        max_tokens: 2500,
+        max_tokens: reportOutputTokens,
         stream: false,
       }, deadline(signal), beforeRequest);
       const { body } = completed;
-      const model = typeof body.model === "string" && /^(?:deepseek-flash|deepseek-v4\.1-flash-1017)$/iu.test(body.model) ? body.model : null;
+      const model = responseIdentity(body.model, apiKey);
       const responseId = responseIdentity(body.id, apiKey);
       const usage = usageReceipt(body.usage);
       const receipt = {
-        model, responseId, usage: usage ?? null,
+        model, requestedModel: GEO_DEEPSEEK_MODEL, responseId, usage: usage ?? null,
+        thinking: { type: "disabled" }, maxOutputTokens: reportOutputTokens,
+        finishReason: responseIdentity(body.choices?.[0]?.finish_reason, apiKey),
         requestSha256: completed.requestSha256, responseSha256: completed.responseSha256,
       };
-      if (!model || !responseId || !usage) {
+      if (model !== GEO_DEEPSEEK_MODEL || !responseId || !usage || !validUsageDetails(body.usage)) {
         throw new GeoDeepSeekError("DEEPSEEK_MODEL_RECEIPT", "DeepSeek 回执缺少有效的模型、响应标识或用量。", { ambiguous: !usage, receipt });
       }
       const choice = body.choices?.[0];
+      const reasoning = choice?.message?.reasoning_content;
+      if ((usage.reasoningTokens ?? 0) !== 0 || (reasoning !== undefined && reasoning !== null
+        && (typeof reasoning !== "string" || reasoning.trim()))) {
+        throw new GeoDeepSeekError("DEEPSEEK_MODE_MISMATCH", "DeepSeek 返回了与关闭思考模式不符的结果。", { receipt });
+      }
       const calls = choice?.message?.tool_calls;
       if (!Array.isArray(body.choices) || body.choices.length !== 1 || choice?.finish_reason !== "stop"
         || choice.message?.role !== "assistant" || (calls !== undefined && (!Array.isArray(calls) || calls.length))

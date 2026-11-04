@@ -165,3 +165,105 @@ test("Watchdog separately fences an expired external dispatch and pauses only sa
   });
   assert.equal(rejected, 403);
 });
+
+test("current and historical revision readback retains failed provider receipts only in the task scope", async (t) => {
+  const adapter = fakeAdapter({ log: [] });
+  const searchEvidence = adapter.searchEvidence;
+  const receipt = { operation: "search", requestSha256: "4".repeat(64), responseSha256: "5".repeat(64) };
+  let attempts = 0;
+  adapter.searchEvidence = async (input) => {
+    if (attempts++ === 0) {
+      await input.beforeRequest();
+      throw Object.assign(new Error("fixture provider returned an unusable result"), {
+        code: "no_verified_sources", ambiguous: false, receipt,
+      });
+    }
+    return searchEvidence(input);
+  };
+  const { open } = await setup(t, adapter);
+  const { api } = await open();
+  const accepted = await api(route + "/events", request);
+  const { taskId } = accepted.data.task;
+  const path = route + "/tasks/" + taskId;
+  await until(async () => (await api(path + scopeQuery)).data.task.status === "paused", "known failure never paused");
+  const current = await api(path + "/revisions/1" + scopeQuery);
+  assert.equal(current.status, 200);
+  assert.deepEqual(current.data.stages, []);
+  assert.equal(current.data.failures.length, 1);
+  assert.deepEqual(current.data.failures[0].receipt, { ...receipt, dataMode: "fixture" });
+  assert.equal((await api(path + "/resume", stageScope)).status, 202);
+  await until(async () => (await api(path + scopeQuery)).data.task.status === "completed", "retry never completed");
+  assert.equal((await api(route + "/events", { ...stageScope, kind: "followup", eventId: "new-revision",
+    taskId, text: "追加可核验材料。", publicResearch: true })).status, 202);
+  const prior = await api(path + "/revisions/1" + scopeQuery);
+  assert.equal(prior.data.stages.length, 2);
+  assert.deepEqual(prior.data.failures, current.data.failures);
+  assert.equal((await api(path + "/revisions/1?threadId=other")).status, 404);
+  assert.equal((await api(path + "/revisions/99" + scopeQuery)).status, 404);
+});
+
+test("Studio shutdown can be requested twice without closing the SQLite handles twice", async (t) => {
+  const { open } = await setup(t, { configured: false });
+  const { close, app } = await open();
+  await Promise.all([close(), app.close()]);
+  await app.close();
+  assert.equal(app.server.listening, false);
+});
+
+test("Studio close during localhost bind drains startup and leaves no listening server", async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), "geo-superagent-startup-"));
+  const app = createGeoStudioServer({ rootDir, dbPath: join(rootDir, "studio.sqlite"), adapter: { configured: false },
+    onError: () => {} });
+  t.after(async () => {
+    await app.close();
+    if (app.server.listening) await new Promise((resolve) => app.server.close(resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  });
+  const opening = app.listen({ port: 0, host: "localhost" });
+  const closing = app.close();
+  await Promise.allSettled([opening, closing]);
+  await closing;
+  assert.equal(app.server.listening, false);
+  assert.equal(app.store.db.isOpen, false);
+  await app.close();
+  await assert.rejects(app.listen({ port: 0 }), { code: "server_closed" });
+});
+
+test("Studio can retry listening after an initial occupied-port failure", async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), "geo-superagent-bind-retry-"));
+  const busy = http.createServer();
+  await new Promise((resolve) => busy.listen(0, "127.0.0.1", resolve));
+  const app = createGeoStudioServer({ rootDir, dbPath: join(rootDir, "studio.sqlite"), adapter: { configured: false } });
+  t.after(async () => {
+    await app.close();
+    await new Promise((resolve) => busy.close(resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  });
+  await assert.rejects(app.listen({ port: busy.address().port, host: "127.0.0.1" }), { code: "EADDRINUSE" });
+  const address = await app.listen({ port: 0, host: "127.0.0.1" });
+  assert.ok(address.port > 0);
+  assert.equal(app.server.listening, true);
+  await app.close();
+  assert.equal(app.store.db.isOpen, false);
+});
+
+test("Studio shutdown during a failed bind keeps retry closed and releases SQLite", async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), "geo-superagent-failed-startup-"));
+  const busy = http.createServer();
+  await new Promise((resolve) => busy.listen(0, "127.0.0.1", resolve));
+  const app = createGeoStudioServer({ rootDir, dbPath: join(rootDir, "studio.sqlite"), adapter: { configured: false } });
+  t.after(async () => {
+    await app.close();
+    await new Promise((resolve) => busy.close(resolve));
+    await rm(rootDir, { recursive: true, force: true });
+  });
+  const opening = app.listen({ port: busy.address().port, host: "127.0.0.1" });
+  const closing = app.close();
+  const [opened, closed] = await Promise.allSettled([opening, closing]);
+  assert.equal(opened.status, "rejected");
+  assert.equal(opened.reason.code, "EADDRINUSE");
+  assert.equal(closed.status, "fulfilled");
+  assert.equal(app.server.listening, false);
+  assert.equal(app.store.db.isOpen, false);
+  await assert.rejects(app.listen({ port: 0 }), { code: "server_closed" });
+});

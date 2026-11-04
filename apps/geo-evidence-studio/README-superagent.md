@@ -44,11 +44,13 @@ node apps/geo-evidence-studio/cli.mjs superagent-watch
 | `POST /api/superagent/events` | 新任务需要 `kind: "request"`、`eventId`、`channelId`、`threadId`、`text`、`publicResearch: true` 和 `params.query`。补充使用 `kind: "followup"` 并传当前 `taskId`。相同事件原样重放返回已有回执。 |
 | `GET /api/superagent/tasks/<taskId>` | 带同一渠道和线程查询参数，读取任务、当前轮回执及事件摘要。 |
 | `GET /api/superagent/tasks/<taskId>/events/<eventId>` | 带同一渠道和线程查询参数，按需读取事件原文。 |
-| `GET /api/superagent/tasks/<taskId>/revisions/<revision>` | 带同一渠道和线程查询参数，读取指定轮次已提交的证据与报告。 |
+| `GET /api/superagent/tasks/<taskId>/revisions/<revision>` | 带同一渠道和线程查询参数，读取该轮的成功证据、报告和失败回执。仅有失败的轮次也可回读。 |
 | `POST /api/superagent/tasks/<taskId>/resume` | 用 `channelId`、`threadId` 显式恢复可安全重试的任务。 |
 | `POST /api/superagent/watch` | 用 `channelId`、`threadId` 扫描本线程的过期执行。 |
 
 测试副本的 HTTP 服务禁止发布。需要经过人工核对的本地导出继续通过受信本机 CLI 进行。待发布内容和客户数据保留在已有独立流程中。
+
+观测入口要求选中的问题存在，导入样本须包含答案原文。未指定导出目录的运行报告会为每次导出生成独立快照，`summary.json` 和 `REPORT.md` 的实际路径随回执返回。
 
 ## 无模型凭据的验证
 

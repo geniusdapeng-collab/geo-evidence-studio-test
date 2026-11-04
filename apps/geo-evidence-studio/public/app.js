@@ -10,6 +10,7 @@ const $ = (selector) => document.querySelector(selector);
 const pct = (value) => value === null || value === undefined ? "N/A" : `${(value * 100).toFixed(1)}%`;
 let apiToken = "";
 let identityRevision = 0;
+let refreshRevision = 0;
 
 export function studioAuthHeaders() {
   return apiToken ? { authorization: `Bearer ${apiToken}` } : {};
@@ -24,7 +25,8 @@ export function evidenceUrl(value) {
 }
 
 export function updateStudioToken(value) {
-  if (apiToken !== value) {
+  const changed = apiToken !== value;
+  if (changed) {
     apiToken = value;
     identityRevision += 1;
     Object.assign(state, { summary: null, samples: [], queries: [], articles: [] });
@@ -33,8 +35,14 @@ export function updateStudioToken(value) {
     $("#run-note").textContent = "正在重新读取看板。";
     clearTimeout(toast.timer);
     $("#toast").classList.remove("show", "error");
+    $("#toast").textContent = "";
+    for (const [selector, label] of [["#run-fixture", "运行夹具样本"], ["#generate-articles", "生成文章草案"]]) {
+      $(selector).disabled = false;
+      $(selector).textContent = label;
+    }
   }
   void refresh().catch((error) => toast(error.message, true));
+  return changed;
 }
 
 function escapeHtml(value) {
@@ -189,14 +197,15 @@ function renderQueries(queries) {
 
 async function refresh() {
   const revision = identityRevision;
+  const requestRevision = ++refreshRevision;
   let snapshot;
   try {
     snapshot = await Promise.all([api("/api/summary"), api("/api/samples?limit=500"), api("/api/queries"), api("/api/articles"), api("/api/publications")]);
   } catch (error) {
-    if (revision === identityRevision) throw error;
+    if (revision === identityRevision && requestRevision === refreshRevision) throw error;
     return;
   }
-  if (revision !== identityRevision) return;
+  if (revision !== identityRevision || requestRevision !== refreshRevision) return;
   const [summary, samples, queries, articles, publications] = snapshot;
   state.summary = summary;
   state.samples = samples.samples;
@@ -216,7 +225,9 @@ async function refresh() {
 }
 
 async function runFixture() {
+  const revision = identityRevision;
   const button = $("#run-fixture");
+  if (button.disabled) return;
   button.disabled = true;
   button.textContent = "运行中…";
   try {
@@ -224,18 +235,23 @@ async function runFixture() {
       method: "POST",
       body: JSON.stringify({ provider: "fixture", limit: 100, concurrency: 4 }),
     });
+    if (revision !== identityRevision) return;
     toast(`夹具运行完成：${result.successful}/${result.planned}`);
     await refresh();
   } catch (error) {
-    toast(error.message, true);
+    if (revision === identityRevision) toast(error.message, true);
   } finally {
-    button.disabled = false;
-    button.textContent = "运行夹具样本";
+    if (revision === identityRevision) {
+      button.disabled = false;
+      button.textContent = "运行夹具样本";
+    }
   }
 }
 
 async function generateArticles() {
+  const revision = identityRevision;
   const button = $("#generate-articles");
+  if (button.disabled) return;
   button.disabled = true;
   button.textContent = "生成中…";
   try {
@@ -243,13 +259,16 @@ async function generateArticles() {
       method: "POST",
       body: JSON.stringify({ dataMode: "draft" }),
     });
+    if (revision !== identityRevision) return;
     toast(`生成 ${result.created.length} 篇文章草案，发布前必须人工确认客户事实。`);
     await refresh();
   } catch (error) {
-    toast(error.message, true);
+    if (revision === identityRevision) toast(error.message, true);
   } finally {
-    button.disabled = false;
-    button.textContent = "生成文章草案";
+    if (revision === identityRevision) {
+      button.disabled = false;
+      button.textContent = "生成文章草案";
+    }
   }
 }
 

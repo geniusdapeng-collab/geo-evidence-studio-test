@@ -91,6 +91,18 @@ function summarizeStage(row) {
   };
 }
 
+function parseFailure(row) {
+  return {
+    revision: row.revision,
+    stage: row.stage,
+    attempt: row.attempt,
+    reason: row.reason,
+    ambiguous: Boolean(row.ambiguous),
+    receipt: row.receipt_json ? JSON.parse(row.receipt_json) : null,
+    failedAt: row.failed_at,
+  };
+}
+
 function leaseDuration(leaseMs) {
   if (!Number.isSafeInteger(leaseMs) || leaseMs < 1 || leaseMs > 30 * 60_000) {
     throw new GeoStateError("invalid_input", "leaseMs 必须是 1 到 1800000 的整数", 400);
@@ -204,7 +216,7 @@ export class GeoSuperagentStore {
       this.db.exec("COMMIT");
       return result;
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
     }
   }
@@ -230,15 +242,7 @@ export class GeoSuperagentStore {
         CASE WHEN a.revision=? THEN f.receipt_json ELSE NULL END AS receipt_json, f.failed_at
       FROM superagent_stage_attempts a JOIN superagent_stage_failures f ON a.seq=f.attempt_seq
       WHERE a.task_id=? ORDER BY a.seq
-    `).all(row.revision, row.id).map((item) => ({
-      revision: item.revision,
-      stage: item.stage,
-      attempt: item.attempt,
-      reason: item.reason,
-      ambiguous: Boolean(item.ambiguous),
-      receipt: item.receipt_json ? JSON.parse(item.receipt_json) : null,
-      failedAt: item.failed_at,
-    })) : undefined;
+    `).all(row.revision, row.id).map(parseFailure) : undefined;
     const pending = row.pending_stage_json ? JSON.parse(row.pending_stage_json) : null;
     return {
       taskId: row.id,
@@ -368,6 +372,18 @@ export class GeoSuperagentStore {
     return this.db.prepare(`
       SELECT * FROM superagent_stage_receipts WHERE task_id=? AND revision=? ORDER BY seq
     `).all(taskId, revision).map(parseStage);
+  }
+
+  getTaskRevisionFailures(scope, taskId, revision) {
+    const row = this.#requireTask(scopeParams(scope), taskId);
+    if (!Number.isSafeInteger(revision) || revision < 1 || revision > row.revision) {
+      throw new GeoStateError("not_found", "当前任务内没有此修订", 404);
+    }
+    return this.db.prepare(`
+      SELECT a.revision, a.stage, a.attempt, f.reason, f.ambiguous, f.receipt_json, f.failed_at
+      FROM superagent_stage_attempts a JOIN superagent_stage_failures f ON a.seq=f.attempt_seq
+      WHERE a.task_id=? AND a.revision=? ORDER BY a.seq LIMIT ?
+    `).all(taskId, revision, maxStagesPerRevision * maxStageAttempts).map(parseFailure);
   }
 
   listEvents(scope, taskId, { throughCursor = Number.MAX_SAFE_INTEGER } = {}) {
