@@ -151,7 +151,7 @@ export function createProvider(name = "fixture", options = {}) {
         const row = records.get(query.id);
         if (!row) throw new Error(`导入文件缺少 queryId=${query.id}`);
         return {
-          answer: String(row.answer ?? ""),
+          answer: row.answer,
           raw: row,
           model: row.model ?? "external-import",
           citations: row.citations ?? undefined,

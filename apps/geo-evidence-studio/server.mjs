@@ -125,6 +125,8 @@ export function createGeoStudioServer(options = {}) {
   catch (error) { store.close(); throw error; }
   const watchdog = watchdogStore.superagent;
   let watchdogTimer;
+  let shutdown;
+  let binding;
   const logError = options.onError ?? ((code) => console.error(`GeoEvidence: ${code}`));
   const coordinator = createGeoSuperagent({
     state, installationScope, adapter, mode: options.adapter ? "fixture" : "real",
@@ -179,7 +181,12 @@ export function createGeoStudioServer(options = {}) {
           return sendJson(response, 200, { event: state.readEvent(queryScope(url), taskId, subject) });
         }
         if (method === "GET" && action === "revisions" && /^\d+$/.test(subject ?? "") && rest.length === 0) {
-          return sendJson(response, 200, { stages: state.getTaskRevision(queryScope(url), taskId, Number(subject)) });
+          const activeScope = queryScope(url);
+          const revision = Number(subject);
+          return sendJson(response, 200, {
+            stages: state.getTaskRevision(activeScope, taskId, revision),
+            failures: state.getTaskRevisionFailures(activeScope, taskId, revision),
+          });
         }
         if (method === "POST" && action === "resume" && subject === undefined) {
           if (!paidActionsAllowed) throw forbidden("恢复研究任务需要配置单独的本机访问令牌");
@@ -260,13 +267,18 @@ export function createGeoStudioServer(options = {}) {
   return {
     server, store, service, dbPath,
     async listen({ port = STUDIO_PORT, host = STUDIO_HOST } = {}) {
+      if (shutdown) throw new GeoStateError("server_closed", "服务已关闭");
       if (!isLoopback(host) || !Number.isSafeInteger(port) || port < 0 || port > 65535) throw badInput("仅支持本机地址和有效端口");
-      await new Promise((resolveListen, reject) => {
+      if (binding) throw new GeoStateError("server_started", "服务已开始监听");
+      binding = new Promise((resolveListen, reject) => {
         const failed = (error) => { server.off("listening", ready); reject(error); };
         const ready = () => { server.off("error", failed); resolveListen(); };
         server.once("error", failed).once("listening", ready);
         server.listen(port, host);
       });
+      try { await binding; }
+      catch (error) { binding = undefined; throw error; }
+      if (shutdown) throw new GeoStateError("server_closed", "监听启动期间服务已关闭");
       const watch = () => {
         try { scanGeoSuperagent(watchdog, installationScope); } catch { logError("watchdog_failed"); }
       };
@@ -276,12 +288,24 @@ export function createGeoStudioServer(options = {}) {
       if (options.startWorker !== false && paidActionsAllowed) coordinator.start();
       return server.address();
     },
-    async close() {
+    close() {
+      if (shutdown) return shutdown;
       clearInterval(watchdogTimer);
-      if (server.listening) await new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
-      await coordinator.stop();
-      if (watchdogStore !== store) watchdogStore.close();
-      store.close();
+      const workerStopped = coordinator.stop();
+      const serverStopped = (async () => {
+        // listen() delivers its startup error to its caller. Shutdown still
+        // waits for a pending DNS/bind operation before releasing SQLite.
+        if (binding) await Promise.allSettled([binding]);
+        if (server.listening) await new Promise((resolveClose, reject) =>
+          server.close((error) => error ? reject(error) : resolveClose()));
+      })();
+      shutdown = Promise.allSettled([workerStopped, serverStopped]).then((results) => {
+        try { if (watchdogStore !== store) watchdogStore.close(); }
+        finally { store.close(); }
+        const failure = results.find((result) => result.status === "rejected");
+        if (failure) throw failure.reason;
+      });
+      return shutdown;
     },
   };
 }

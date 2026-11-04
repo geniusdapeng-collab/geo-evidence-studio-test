@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -13,6 +13,7 @@ import {
 import { createProvider, getProviderCapabilities } from "./providers.mjs";
 import { createGeoSuperAgentDeepSeek } from "./superagent-deepseek.mjs";
 import { GeoStateError, requireGeoId } from "./superagent-store.mjs";
+import project from "../project.manifest.json" with { type: "json" };
 
 function slugify(value) {
   const ascii = value
@@ -74,8 +75,8 @@ export class GeoEvidenceService {
   health() {
     return {
       ok: true,
-      service: "geo-evidence-studio",
-      version: "0.1.0",
+      service: project.id,
+      version: project.version,
       case: FUTURE_FRONTDESK_CASE.id,
       database: this.store.path,
       providers: getProviderCapabilities(),
@@ -102,12 +103,22 @@ export class GeoEvidenceService {
       apiKey: this.env.DEEPSEEK_API_KEY,
       timeoutMs: this.env.DEEPSEEK_TIMEOUT_MS,
     });
-    await adapter.prepare?.();
+    if (category !== undefined && (typeof category !== "string" || !category.trim())) {
+      throw new GeoStateError("invalid_input", "问题分类须为非空文本", 400);
+    }
+    if (queryIds !== undefined && (!Array.isArray(queryIds) || !queryIds.length || queryIds.length > 1000
+      || queryIds.some((id) => typeof id !== "string" || !id))) {
+      throw new GeoStateError("invalid_input", "queryIds 须为非空的问题编号数组", 400);
+    }
     const allQueries = this.store.listQueries({ category, limit: 1000 });
     const selectedIds = queryIds ? new Set(queryIds) : null;
+    if (!allQueries.length || (selectedIds && allQueries.filter((query) => selectedIds.has(query.id)).length !== selectedIds.size)) {
+      throw new GeoStateError("query_not_found", "指定范围中没有所选问题", 400);
+    }
     const queries = allQueries
       .filter((query) => !selectedIds || selectedIds.has(query.id))
       .slice(0, Math.max(1, Number(limit) || 20));
+    await adapter.prepare?.();
     const runId = this.store.createRun({
       provider,
       dataMode: adapter.dataMode,
@@ -130,7 +141,8 @@ export class GeoEvidenceService {
       const prompt = `请回答酒店采购方会问的问题：${query.text}`;
       try {
         const result = await adapter.answer(query);
-        const answer = String(result.answer ?? "");
+        const { answer } = result;
+        if (typeof answer !== "string" || !answer.trim()) throw new GeoStateError("answer_missing", "样本缺少有效答案", 422);
         let analysis = analyzeAnswer(query, answer, FUTURE_FRONTDESK_CASE);
         analysis = mergeProviderCitations(analysis, result.citations ?? []);
         const evidenceHash = sha256(JSON.stringify({
@@ -224,8 +236,9 @@ export class GeoEvidenceService {
     if (!["fixture", "imported"].includes(dataMode)) {
       throw new GeoStateError("invalid_input", "手工导入答案只能标记为 imported 或 fixture", 400);
     }
+    if (typeof answer !== "string" || !answer.trim()) throw new GeoStateError("answer_missing", "导入样本须包含有效的答案原文", 400);
     const query = this.store.listQueries({ limit: 1000 }).find((item) => item.id === queryId);
-    if (!query) throw new Error(`问题不存在：${queryId}`);
+    if (!query) throw new GeoStateError("query_not_found", "当前项目没有所选问题", 400);
     const runId = this.store.createRun({
       provider: "manual-import",
       dataMode,
@@ -235,7 +248,7 @@ export class GeoEvidenceService {
       plannedSamples: 1,
       notes: ["通过工具桥接导入的答案必须携带原始答案；引用缺证时不得伪造。"],
     });
-    let analysis = analyzeAnswer(query, String(answer ?? ""), FUTURE_FRONTDESK_CASE);
+    let analysis = analyzeAnswer(query, answer, FUTURE_FRONTDESK_CASE);
     analysis = mergeProviderCitations(analysis, citations);
     analysis.evidenceHash = sha256(JSON.stringify({ queryId, answer, citations, platform, model }));
     const evidenceDir = join(this.rootDir, "outputs", "geo-evidence-studio", "evidence", runId);
@@ -331,6 +344,10 @@ export class GeoEvidenceService {
   }
 
   generateArticles({ topicIds, force = false, dataMode = "draft" } = {}) {
+    if (dataMode !== "draft" || typeof force !== "boolean"
+      || (topicIds !== undefined && (!Array.isArray(topicIds) || topicIds.some((id) => typeof id !== "string" || !id)))) {
+      throw new GeoStateError("invalid_input", "文章生成只支持草案模式、布尔 force 和主题编号数组", 400);
+    }
     const queries = this.store.listQueries({ limit: 1000 });
     const existing = this.store.listArticles(1000);
     const selectedTopics = ARTICLE_TOPICS.filter((topic) =>
@@ -404,12 +421,16 @@ export class GeoEvidenceService {
   }
 
   async writeReport({ runId, outDir } = {}) {
+    if (runId !== undefined) {
+      requireGeoId(runId, "runId");
+      if (!this.store.hasRun(runId)) throw new GeoStateError("run_not_found", "当前工作区没有此观测运行", 404);
+    }
     const summary = this.summary({ runId });
-    const targetDir = resolve(outDir ?? join(this.rootDir, "outputs", "geo-evidence-studio", "report"));
-    await mkdir(targetDir, { recursive: true });
+    const reportDir = resolve(outDir ?? join(this.rootDir, "outputs", "geo-evidence-studio", "report"));
+    await mkdir(reportDir, { recursive: true });
+    const targetDir = outDir === undefined ? await mkdtemp(join(reportDir, "snapshot-")) : reportDir;
     const jsonPath = join(targetDir, "summary.json");
     const markdownPath = join(targetDir, "REPORT.md");
-    await writeFile(jsonPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
     const metric = summary.metrics;
     const pct = (value) => value === null ? "未验证" : `${(value * 100).toFixed(1)}%`;
     const markdown = `# GeoEvidence Studio 运行报告\n\n` +
@@ -425,7 +446,16 @@ export class GeoEvidenceService {
       `- 品牌负面引用率：${pct(metric.negativeCitationRate)}\n` +
       `- 证据覆盖率：${pct(metric.evidenceCoverageRate)}\n\n` +
       `> “未验证”表示缺真实采集、缺来源域名或分母为 0，不表示 0%。\n`;
-    await writeFile(markdownPath, markdown, "utf8");
+    try {
+      await writeFile(jsonPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+      await writeFile(markdownPath, markdown, "utf8");
+    } catch (error) {
+      if (outDir === undefined) {
+        try { await rm(targetDir, { recursive: true, force: true }); }
+        catch (cleanupError) { throw new AggregateError([error, cleanupError], "报告写入失败，临时目录清理失败"); }
+      }
+      throw error;
+    }
     return { jsonPath, markdownPath, summary };
   }
 
@@ -455,7 +485,7 @@ export class GeoEvidenceService {
       case "geo.rewrite": {
         const generated = this.generateArticles({
           topicIds: params.topicIds,
-          force: Boolean(params.force),
+          force: params.force,
           dataMode: "draft",
         });
         return {

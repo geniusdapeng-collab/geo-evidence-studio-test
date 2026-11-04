@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -188,6 +189,213 @@ test("known external failure preserves both immutable usage receipts and stops a
   assert.equal(blocked.reason, "stage_attempt_limit");
   assert.deepEqual(blocked.failures.map((item) => item.receipt.id), ["upstream-1", "upstream-2"]);
   assert.throws(() => store.resume(scope, id), { code: "task_unavailable" });
+});
+
+test("revision failure readback retains historical provider receipts within the exact task scope", async (t) => {
+  const env = await fixture(t);
+  const store = env.open().superagent;
+  const id = request(store).task.taskId;
+  const begin = { stage: "report", external: true, input: { cursor: 1 } };
+  const first = store.claim(scope, id).leaseToken;
+  store.beginStage(scope, id, first, begin);
+  const receipt = { responseId: "failed-response-1", usage: { promptTokens: 17, completionTokens: 9 } };
+  const failed = store.fail(scope, id, first, { reason: "invalid_response", receipt }).failures[0];
+  assert.deepEqual(store.getTaskRevisionFailures(scope, id, 1), [failed]);
+  store.resume(scope, id);
+  const second = store.claim(scope, id).leaseToken;
+  store.beginStage(scope, id, second, begin);
+  store.commitStage(scope, id, second, { stage: "report", evidence: { responseId: "success-2" }, complete: true });
+  followup(store, id, "new-revision", "继续核对历史依据");
+  assert.equal(store.getTask(scope, id).revision, 2);
+  assert.equal(store.getTask(scope, id).failures[0].receipt, null);
+  assert.deepEqual(store.getTaskRevisionFailures(scope, id, 1), [failed]);
+  assert.deepEqual(store.getTaskRevisionFailures(scope, id, 2), []);
+  const readback = store.getTaskRevisionFailures(scope, id, 1);
+  readback[0].receipt.usage.promptTokens = 999;
+  assert.deepEqual(env.open().superagent.getTaskRevisionFailures(scope, id, 1)[0].receipt, receipt);
+  for (const field of Object.keys(scope)) {
+    assert.throws(() => store.getTaskRevisionFailures({ ...scope, [field]: "foreign" }, id, 1), {
+      code: "not_found", statusCode: 404,
+    });
+  }
+  for (const revision of [0, -1, 1.5, 3, "1", Number.NaN]) {
+    assert.throws(() => store.getTaskRevisionFailures(scope, id, revision), { code: "not_found", statusCode: 404 });
+  }
+  assert.throws(() => store.getTaskRevisionFailures(scope, "missing-task", 1), { code: "not_found" });
+});
+
+test("abrupt process exit recovers committed WAL state and discards an unfinished transaction", async (t) => {
+  const env = await fixture(t);
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import { GeoStore } from ${JSON.stringify(new URL("../lib/store.mjs", import.meta.url).href)};
+    const scope = ${JSON.stringify(scope)};
+    const owner = new GeoStore(process.argv[1], { clock: () => Date.parse("2026-11-04T01:00:00.000Z") });
+    const store = owner.superagent;
+    const admit = (eventId, text = "已提交事件") => store.admit(scope, { eventId, kind: "request", text });
+    const local = admit("crash-local", "字".repeat(601)).task.taskId;
+    const localLease = store.claim(scope, local, { leaseMs: 10 }).leaseToken;
+    store.beginStage(scope, local, localLease, { stage: "prepare", input: { stable: true } });
+    const external = admit("crash-external").task.taskId;
+    const externalLease = store.claim(scope, external, { leaseMs: 10 }).leaseToken;
+    store.beginStage(scope, external, externalLease, { stage: "search", external: true, input: { query: "公开资料" } });
+    const completed = admit("crash-completed").task.taskId;
+    const first = store.claim(scope, completed).leaseToken;
+    store.beginStage(scope, completed, first, { stage: "report", external: true });
+    store.fail(scope, completed, first, { reason: "invalid_response", receipt: { responseId: "known-failure", tokens: 7 } });
+    store.resume(scope, completed);
+    const second = store.claim(scope, completed).leaseToken;
+    store.beginStage(scope, completed, second, { stage: "report", external: true });
+    store.commitStage(scope, completed, second, { stage: "report", evidence: { responseId: "committed-report" }, complete: true });
+    store.admit(scope, { eventId: "crash-followup", kind: "followup", taskId: completed, text: "下一修订" });
+    owner.db.exec("BEGIN IMMEDIATE");
+    owner.db.prepare("UPDATE superagent_tasks SET reason='uncommitted-change' WHERE id=?").run(local);
+    process.stdout.write(JSON.stringify({ local, localLease, external, externalLease, completed }));
+    process.exit(0);
+  `, env.path], { encoding: "utf8", timeout: 10_000 });
+  assert.ifError(child.error);
+  assert.equal(child.status, 0, child.stderr);
+  const { local, localLease, external, externalLease, completed } = JSON.parse(child.stdout);
+  assert.ok((await readFile(`${env.path}-wal`)).length > 0);
+  const owner = env.open();
+  const store = owner.superagent;
+  assert.equal(owner.db.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
+  assert.deepEqual(owner.db.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.equal(store.getTask(scope, local).reason, null);
+  assert.equal(store.readEvent(scope, local, "crash-local").text, "字".repeat(601));
+  assert.equal(store.admit(scope, { eventId: "crash-local", kind: "request", text: "字".repeat(601) }).replay, true);
+  assert.equal(store.getTask(scope, completed).revision, 2);
+  assert.equal(store.getTask(scope, completed).status, "queued");
+  assert.equal(store.getTaskRevision(scope, completed, 1)[0].evidence.responseId, "committed-report");
+  assert.equal(store.getTaskRevisionFailures(scope, completed, 1)[0].receipt.responseId, "known-failure");
+  env.advance(10);
+  for (const [taskId, token] of [[local, localLease], [external, externalLease]]) {
+    assert.throws(() => store.renew(scope, taskId, token), { code: "stale_lease" });
+  }
+  assert.deepEqual(store.recoverExpired(scope), { paused: [local], blocked: [external] });
+  assert.deepEqual(store.recoverExpired(scope), { paused: [], blocked: [] });
+  assert.equal(store.getTaskRevisionFailures(scope, local, 1)[0].reason, "lease_expired");
+  assert.equal(store.getTask(scope, external).pendingStage.stage, "search");
+  assert.equal(store.getTaskRevisionFailures(scope, external, 1)[0].ambiguous, true);
+  assert.throws(() => store.resume(scope, external), { code: "task_unavailable" });
+  store.resume(scope, local);
+  const lease = store.claim(scope, local).leaseToken;
+  assert.equal(store.beginStage(scope, local, lease, { stage: "prepare", input: { stable: true } }).attempt, 2);
+  const done = store.commitStage(scope, local, lease, { stage: "prepare", evidence: { restored: true }, complete: true });
+  assert.deepEqual(env.open().superagent.getTask(scope, local), done);
+});
+
+test("spill and receipt write failures roll back task state and preserve the current lease", async (t) => {
+  const owner = (await fixture(t)).open();
+  const store = owner.superagent;
+  owner.db.exec(`CREATE TEMP TRIGGER inject_spill_failure BEFORE INSERT ON superagent_event_spills
+    BEGIN SELECT RAISE(ABORT, 'injected_spill_failure'); END;`);
+  assert.throws(() => store.admit(scope, { eventId: "atomic-event", kind: "request", text: "字".repeat(601) }), /injected_spill_failure/);
+  assert.deepEqual(store.listTasks(scope), []);
+  assert.equal(owner.db.prepare("SELECT count(*) AS n FROM superagent_events").get().n, 0);
+  owner.db.exec("DROP TRIGGER inject_spill_failure");
+  const id = store.admit(scope, { eventId: "atomic-event", kind: "request", text: "字".repeat(601) }).task.taskId;
+  const lease = store.claim(scope, id).leaseToken;
+  store.beginStage(scope, id, lease, { stage: "report", input: { stable: true } });
+  const before = store.getTask(scope, id);
+  owner.db.exec(`CREATE TEMP TRIGGER inject_receipt_failure BEFORE INSERT ON superagent_stage_receipts
+    BEGIN SELECT RAISE(ABORT, 'injected_receipt_failure'); END;`);
+  assert.throws(() => store.commitStage(scope, id, lease, { stage: "report", evidence: { saved: true }, complete: true }), /injected_receipt_failure/);
+  assert.deepEqual(store.getTask(scope, id), before);
+  assert.deepEqual(store.getTaskRevision(scope, id, 1), []);
+  owner.db.exec("DROP TRIGGER inject_receipt_failure");
+  const completed = store.commitStage(scope, id, lease, { stage: "report", evidence: { saved: true }, complete: true });
+  owner.db.exec(`CREATE TEMP TRIGGER inject_followup_failure BEFORE INSERT ON superagent_event_spills
+    BEGIN SELECT RAISE(ABORT, 'injected_followup_failure'); END;`);
+  assert.throws(() => followup(store, id, "atomic-followup", "字".repeat(601)), /injected_followup_failure/);
+  assert.deepEqual(store.getTask(scope, id), completed);
+  assert.equal(store.listEvents(scope, id).length, 1);
+  owner.db.exec("DROP TRIGGER inject_followup_failure");
+  assert.equal(followup(store, id, "atomic-followup", "字".repeat(601)).task.revision, 2);
+});
+
+test("SQLite automatic rollback preserves the original write error and permits a later retry", async (t) => {
+  const owner = (await fixture(t)).open();
+  const store = owner.superagent;
+  owner.db.exec(`CREATE TEMP TRIGGER inject_automatic_rollback BEFORE INSERT ON superagent_event_spills
+    BEGIN SELECT RAISE(ROLLBACK, 'injected_automatic_rollback'); END;`);
+  assert.throws(() => store.admit(scope, { eventId: "rolled-back", kind: "request", text: "字".repeat(601) }), {
+    message: "injected_automatic_rollback",
+  });
+  assert.equal(owner.db.isTransaction, false);
+  assert.deepEqual(store.listTasks(scope), []);
+  assert.equal(owner.db.prepare("SELECT count(*) AS n FROM superagent_events").get().n, 0);
+  owner.db.exec("DROP TRIGGER inject_automatic_rollback");
+  const accepted = store.admit(scope, { eventId: "rolled-back", kind: "request", text: "字".repeat(601) });
+  assert.equal(accepted.replay, false);
+  assert.equal(store.listEvents(scope, accepted.task.taskId).length, 1);
+});
+
+test("stage inputs, JSON limits and retry bounds reject changes without losing persisted attempts", async (t) => {
+  const owner = (await fixture(t)).open();
+  const store = owner.superagent;
+  const id = request(store).task.taskId;
+  const lease = store.claim(scope, id).leaseToken;
+  const before = store.getTask(scope, id);
+  const circular = {};
+  circular.self = circular;
+  for (const input of [circular, { value: Number.POSITIVE_INFINITY }, { value: undefined }, { value: 1n }]) {
+    assert.throws(() => store.beginStage(scope, id, lease, { stage: "invalid", input }), { code: "invalid_input" });
+    assert.deepEqual(store.getTask(scope, id), before);
+  }
+  assert.throws(() => store.beginStage(scope, id, lease, { stage: "invalid", input: { text: "x".repeat(64 * 1024) } }), {
+    code: "payload_too_large", statusCode: 413,
+  });
+  assert.equal(owner.db.prepare("SELECT count(*) AS n FROM superagent_stage_attempts").get().n, 0);
+  const input = { b: 2, a: 1 };
+  const first = store.beginStage(scope, id, lease, { stage: "prepare", input });
+  assert.deepEqual(store.beginStage(scope, id, lease, { stage: "prepare", input: { a: 1, b: 2 } }), first);
+  assert.equal(owner.db.prepare("SELECT count(*) AS n FROM superagent_stage_attempts").get().n, 1);
+  input.a = 999;
+  assert.equal(store.getTask(scope, id).pendingStage.input.a, 1);
+  assert.throws(() => store.beginStage(scope, id, lease, { stage: "prepare", input }), { code: "stage_conflict" });
+  store.fail(scope, id, lease, { reason: "first_failure" });
+  store.resume(scope, id);
+  const second = store.claim(scope, id).leaseToken;
+  assert.equal(store.beginStage(scope, id, second, { stage: "prepare", input: { a: 1, b: 2 } }).attempt, 2);
+  assert.equal(store.fail(scope, id, second, { reason: "second_failure" }).reason, "stage_attempt_limit");
+  assert.deepEqual(store.getTaskRevisionFailures(scope, id, 1).map((item) => [item.attempt, item.reason]), [
+    [1, "first_failure"], [2, "second_failure"],
+  ]);
+});
+
+test("stage and evidence quotas include committed data and leave rejected commits pending", async (t) => {
+  const owner = (await fixture(t)).open();
+  const store = owner.superagent;
+  const stageId = request(store, "stage-capacity").task.taskId;
+  const stageLease = store.claim(scope, stageId).leaseToken;
+  for (let index = 0; index < 12; index += 1) {
+    store.beginStage(scope, stageId, stageLease, { stage: `step-${index}` });
+    store.commitStage(scope, stageId, stageLease, { stage: `step-${index}`, evidence: { step: index } });
+  }
+  const stagesBefore = store.getTask(scope, stageId);
+  assert.throws(() => store.beginStage(scope, stageId, stageLease, { stage: "overflow" }), { code: "stage_limit" });
+  assert.deepEqual(store.getTask(scope, stageId), stagesBefore);
+  assert.equal(store.getTaskRevision(scope, stageId, 1).length, 12);
+
+  const evidenceId = request(store, "evidence-capacity").task.taskId;
+  const evidenceLease = store.claim(scope, evidenceId).leaseToken;
+  const evidence = { text: "x".repeat(1024 * 1024 - Buffer.byteLength('{"text":""}')) };
+  assert.equal(Buffer.byteLength(JSON.stringify(evidence)), 1024 * 1024);
+  for (let index = 0; index < 3; index += 1) {
+    store.beginStage(scope, evidenceId, evidenceLease, { stage: `large-${index}` });
+    store.commitStage(scope, evidenceId, evidenceLease, { stage: `large-${index}`, evidence });
+  }
+  store.beginStage(scope, evidenceId, evidenceLease, { stage: "overflow" });
+  const evidenceBefore = store.getTask(scope, evidenceId);
+  assert.throws(() => store.commitStage(scope, evidenceId, evidenceLease, { stage: "overflow", evidence: { over: true }, complete: true }), {
+    code: "payload_too_large", statusCode: 413,
+  });
+  assert.deepEqual(store.getTask(scope, evidenceId), evidenceBefore);
+  assert.equal(store.getTaskRevision(scope, evidenceId, 1).length, 3);
+  assert.throws(() => store.commitStage(scope, evidenceId, evidenceLease, { stage: "overflow", evidence: { text: `${evidence.text}x` } }), {
+    code: "payload_too_large", statusCode: 413,
+  });
+  assert.equal(store.getTask(scope, evidenceId).pendingStage.stage, "overflow");
 });
 
 test("event size, identifier, and followup bounds fail without changing stored events", async (t) => {

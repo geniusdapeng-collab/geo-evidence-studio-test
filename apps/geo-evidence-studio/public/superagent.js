@@ -11,7 +11,7 @@ const followupStatuses = new Set(["queued", "running", "paused", "completed"]);
 const state = {
   threadId: $("sa-thread").value, scope: new AbortController(), config: null,
   tasks: [], taskId: "", selectedTask: null, detailVersion: 0, detailFingerprint: "", sending: false, loading: false, poll: null,
-  requestKeys: new Map(),
+  requestKeys: new Map(), shownRevision: null,
 };
 
 function node(tag, text, className) {
@@ -223,12 +223,32 @@ function renderReceipts(task, shownRevision, stages, evidenceStage, reportStage)
   return section;
 }
 
-function renderStages(task, stages, shownRevision = task.revision) {
+function renderFailures(failures) {
+  const section = detailBlock("失败与待核对回执");
+  for (const failure of failures) {
+    const details = node("details");
+    details.append(node("summary", `第 ${failure.revision} 轮 · ${stageLabels[failure.stage] ?? failure.stage} · 第 ${failure.attempt} 次尝试`));
+    details.append(node("p", failure.ambiguous ? "外部请求结果不明，请核对回执后再决定下一步。" : "本次尝试未完成；已有回执保留如下。", "muted"));
+    const receipt = failure.receipt;
+    const mode = receipt?.dataMode;
+    const rows = [["原因代码", failure.reason], ["记录时间", timeLabel(failure.failedAt)],
+      ["数据模式", mode === "fixture" ? "本机夹具" : mode === "real" ? "真实模型" : undefined]];
+    details.append(node("pre", rows.filter(([, value]) => value !== undefined)
+      .map(([label, value]) => `${label}  ${value}`).join("\n"), "sa-receipt"));
+    details.append(receipt ? node("pre", JSON.stringify(receipt, null, 2), "sa-receipt")
+      : node("p", "没有已结算的供应商回执。", "muted"));
+    section.append(details);
+  }
+  return section;
+}
+
+function renderStages(task, stages, shownRevision = task.revision, failures = (task.failures ?? []).filter((item) => item.revision === shownRevision)) {
   const reportStage = stages.filter((stage) => stage.stage === "report" && stage.evidence?.report).at(-1);
   const evidenceStage = stages.filter((stage) => stage.stage === "evidence" && Array.isArray(stage.evidence?.sources)).at(-1);
   return [
     ...(reportStage ? [renderReport(reportStage, task.revision)] : []),
     renderSources(evidenceStage?.evidence.sources ?? []), renderReceipts(task, shownRevision, stages, evidenceStage, reportStage),
+    ...(failures.length ? [renderFailures(failures)] : []),
   ];
 }
 
@@ -239,10 +259,12 @@ function renderTaskDetail(task, events) {
   const children = [heading, node("p", `第 ${task.revision ?? 1} 轮${pending ? ` · 正在处理${stageLabels[pending] ?? "下一阶段"}` : ""}`, "muted")];
   if (task.status === "blocked") children.push(node("p", "本任务已阻断，请核对已有回执。此状态不可直接恢复。", "sa-error"));
   if (task.status === "paused") children.push(node("p", "本任务已暂停。可以核对记录后恢复。", "muted"));
+  if (task.reason) children.push(node("p", `任务原因代码：${task.reason}`, "muted"));
   const stages = Array.isArray(task.stages) ? task.stages : [];
   const stageView = node("div");
   stageView.append(...renderStages(task, stages));
-  const priorRevisions = [...new Set((task.history ?? []).map((stage) => stage.revision))].sort((a, b) => b - a);
+  const priorRevisions = [...new Set([...(task.history ?? []), ...(task.failures ?? [])]
+    .map((item) => item.revision).filter((revision) => revision < task.revision))].sort((a, b) => b - a);
   if (priorRevisions.length) {
     const bar = detailBlock("研究轮次");
     const select = node("select");
@@ -252,22 +274,30 @@ function renderTaskDetail(task, events) {
       option.value = String(revision);
       select.append(option);
     }
-    select.addEventListener("change", async () => {
+    const readRevision = async () => {
       const revision = Number(select.value);
+      state.shownRevision = revision === task.revision ? null : revision;
       if (revision === task.revision) return stageView.replaceChildren(...renderStages(task, stages));
       const scope = state.scope;
       stageView.replaceChildren(node("p", "正在读取历史回执…", "muted"));
       try {
-        const { stages: old } = await request(`/tasks/${encodeURIComponent(task.taskId)}/revisions/${revision}?${scopeQuery()}`, undefined, scope);
-        if (!scope.signal.aborted && select.isConnected && Number(select.value) === revision) stageView.replaceChildren(...renderStages(task, old, revision));
+        const { stages: old, failures = (task.failures ?? []).filter((item) => item.revision === revision) } = await request(`/tasks/${encodeURIComponent(task.taskId)}/revisions/${revision}?${scopeQuery()}`, undefined, scope);
+        if (!scope.signal.aborted && select.isConnected && Number(select.value) === revision) stageView.replaceChildren(...renderStages(task, old, revision, failures));
       } catch (error) {
         if (!scope.signal.aborted && select.isConnected && Number(select.value) === revision) {
           showError(error);
           select.value = String(task.revision);
+          state.shownRevision = null;
           stageView.replaceChildren(...renderStages(task, stages));
         }
       }
-    });
+    };
+    select.addEventListener("change", readRevision);
+    if (priorRevisions.includes(state.shownRevision)) {
+      select.value = String(state.shownRevision);
+      // The node is connected below before the async read can resolve.
+      void readRevision();
+    }
     bar.append(select);
     children.push(bar);
   }
@@ -283,7 +313,8 @@ async function loadDetail(taskId, scope = state.scope, version = state.detailVer
     task.displayTitle = (events ?? []).find((event) => event.kind === "request")?.preview;
     state.selectedTask = task;
     const index = state.tasks.findIndex((entry) => entry.taskId === taskId);
-    const fingerprint = JSON.stringify([task.status, task.revision, task.latestEventCursor, task.completedEventCursor, task.pendingStage, task.stages?.length]);
+    const fingerprint = JSON.stringify([task.status, task.reason, task.revision, task.latestEventCursor,
+      task.runEventCursor, task.completedEventCursor, task.pendingStage, task.stages, task.history, task.failures, events]);
     if (fingerprint !== state.detailFingerprint) {
       state.detailFingerprint = fingerprint;
       if (index < 0) state.tasks.unshift(task);
@@ -295,6 +326,7 @@ async function loadDetail(taskId, scope = state.scope, version = state.detailVer
   } catch (error) {
     if (!current()) return;
     state.selectedTask = null;
+    state.detailFingerprint = "";
     $("sa-detail").replaceChildren(node("p", "暂时无法读取任务详情。请刷新重试。", "muted"));
     showError(error);
   } finally { if (current()) updateControls(); }
@@ -304,6 +336,7 @@ function selectTask(taskId) {
   clearTimeout(state.poll);
   state.detailVersion += 1;
   state.detailFingerprint = "";
+  if (state.taskId !== taskId) state.shownRevision = null;
   state.taskId = taskId;
   state.selectedTask = null;
   renderTaskList();
@@ -325,6 +358,12 @@ async function loadTasks() {
     renderTaskList();
     const selected = tasks.find((task) => task.taskId === state.taskId) ?? tasks[0];
     if (selected) selectTask(selected.taskId);
+    else {
+      clearTimeout(state.poll);
+      state.detailVersion += 1;
+      Object.assign(state, { taskId: "", selectedTask: null, detailFingerprint: "", shownRevision: null });
+      $("sa-detail").replaceChildren(node("p", "选择一项任务后，可以查看进度、引用和执行回执。", "muted"));
+    }
   } catch (error) {
     if (scope.signal.aborted) return;
     $("sa-list-status").textContent = "暂时无法读取任务。";
@@ -339,7 +378,7 @@ async function connect() {
   clearTimeout(state.poll);
   state.scope = new AbortController();
   const scope = state.scope;
-  Object.assign(state, { config: null, tasks: [], taskId: "", selectedTask: null, sending: false, loading: false });
+  Object.assign(state, { config: null, tasks: [], taskId: "", selectedTask: null, sending: false, loading: false, shownRevision: null });
   message(""); message("", true);
   $("sa-connection").textContent = "连接中…";
   $("sa-scope").textContent = "正在读取工作范围…";
@@ -391,14 +430,13 @@ function submitEvent(kind, textField, queryField, confirmField) {
   const body = { channelId, threadId: state.threadId, kind, text, publicResearch: true,
     ...(kind === "followup" ? { taskId } : {}), ...(query ? { params: { query } } : {}) };
   const fingerprint = JSON.stringify(body);
-  const retry = state.requestKeys.get(kind);
-  const eventId = retry?.fingerprint === fingerprint ? retry.eventId : crypto.randomUUID();
-  state.requestKeys.set(kind, { fingerprint, eventId });
+  const eventId = state.requestKeys.get(fingerprint) ?? crypto.randomUUID();
+  state.requestKeys.set(fingerprint, eventId);
   void mutate(async (scope) => {
     message(kind === "request" ? "正在提交研究任务…" : "正在提交补充…");
     const { task, replay } = await request("/events", { ...body, eventId }, scope);
     if (scope.signal.aborted) return;
-    state.requestKeys.delete(kind);
+    state.requestKeys.delete(fingerprint);
     if ($(textField).value.trim() === text) $(textField).value = "";
     if ($(queryField).value.trim() === query) $(queryField).value = "";
     $(confirmField).checked = false;
@@ -413,7 +451,6 @@ $("sa-thread-form").addEventListener("submit", (event) => {
   if (!/^[\p{L}\p{N}][\p{L}\p{N}_.:@-]{0,127}$/u.test(threadId)) return message("线程编号最多 128 个字符，以字母、汉字或数字开始，可包含 . _ : @ -。", true);
   if (threadId !== state.threadId) {
     state.threadId = threadId;
-    state.requestKeys.clear();
     for (const id of ["sa-request", "sa-query", "sa-followup", "sa-followup-query"]) $(id).value = "";
     $("sa-public-request").checked = false;
     $("sa-public-followup").checked = false;
@@ -422,12 +459,14 @@ $("sa-thread-form").addEventListener("submit", (event) => {
 });
 $("sa-token-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  updateStudioToken($("sa-token").value.trim());
+  const changed = updateStudioToken($("sa-token").value.trim());
   $("sa-token").value = "";
-  state.requestKeys.clear();
-  for (const id of ["sa-request", "sa-query", "sa-followup", "sa-followup-query"]) $(id).value = "";
-  $("sa-public-request").checked = false;
-  $("sa-public-followup").checked = false;
+  if (changed) {
+    state.requestKeys.clear();
+    for (const id of ["sa-request", "sa-query", "sa-followup", "sa-followup-query"]) $(id).value = "";
+    $("sa-public-request").checked = false;
+    $("sa-public-followup").checked = false;
+  }
   void connect();
 });
 $("sa-request-form").addEventListener("submit", (event) => {

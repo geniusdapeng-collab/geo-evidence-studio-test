@@ -225,7 +225,7 @@ export class GeoStore {
       }
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
     }
   }
@@ -308,49 +308,56 @@ export class GeoStore {
   }) {
     const id = `sample-${randomUUID()}`;
     const capturedAt = now();
-    this.db.prepare(`
-      INSERT INTO samples (
-        id, run_id, query_id, platform, model, provider, data_mode, prompt,
-        answer, citations_json, analysis_json, raw_json, evidence_hash,
-        screenshot_uri, status, error, captured_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      runId,
-      query.id,
-      platform,
-      model ?? null,
-      provider,
-      dataMode,
-      prompt,
-      answer ?? "",
-      asJson(citations ?? []),
-      asJson(analysis ?? {}),
-      raw === undefined ? null : asJson(raw),
-      analysis?.evidenceHash ?? (answer ? sha256(`${query.id}\n${answer}`) : null),
-      screenshotUri ?? null,
-      status,
-      error ?? null,
-      capturedAt,
-    );
-
-    if (status === "success" && analysis?.brandNegative) {
-      const claim = analysis.negativeBrandSentences?.[0]?.text
-        ?? "品牌负向提及";
+    this.db.exec("BEGIN");
+    try {
       this.db.prepare(`
-        INSERT INTO incidents (
-          id, sample_id, query_id, severity, kind, claim, source_urls_json, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)
+        INSERT INTO samples (
+          id, run_id, query_id, platform, model, provider, data_mode, prompt,
+          answer, citations_json, analysis_json, raw_json, evidence_hash,
+          screenshot_uri, status, error, captured_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        `incident-${randomUUID()}`,
         id,
+        runId,
         query.id,
-        query.priority === "P0" ? "P0" : "P1",
-        analysis.negativeCitation ? "brand_negative_citation" : "brand_negative_mention",
-        claim.slice(0, 500),
-        asJson((analysis.riskyCitations ?? []).map((citation) => citation.url)),
+        platform,
+        model ?? null,
+        provider,
+        dataMode,
+        prompt,
+        answer ?? "",
+        asJson(citations ?? []),
+        asJson(analysis ?? {}),
+        raw === undefined ? null : asJson(raw),
+        analysis?.evidenceHash ?? (answer ? sha256(`${query.id}\n${answer}`) : null),
+        screenshotUri ?? null,
+        status,
+        error ?? null,
         capturedAt,
       );
+
+      if (status === "success" && analysis?.brandNegative) {
+        const claim = analysis.negativeBrandSentences?.[0]?.text
+          ?? "品牌负向提及";
+        this.db.prepare(`
+          INSERT INTO incidents (
+            id, sample_id, query_id, severity, kind, claim, source_urls_json, status, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)
+        `).run(
+          `incident-${randomUUID()}`,
+          id,
+          query.id,
+          query.priority === "P0" ? "P0" : "P1",
+          analysis.negativeCitation ? "brand_negative_citation" : "brand_negative_mention",
+          claim.slice(0, 500),
+          asJson((analysis.riskyCitations ?? []).map((citation) => citation.url)),
+          capturedAt,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
     }
     return id;
   }
@@ -388,9 +395,13 @@ export class GeoStore {
       }
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  hasRun(id) {
+    return Boolean(this.db.prepare("SELECT 1 FROM runs WHERE id=?").get(id));
   }
 
   listRuns(limit = 20) {

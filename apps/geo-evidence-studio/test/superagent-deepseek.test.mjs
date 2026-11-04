@@ -18,7 +18,7 @@ function completion(id, overrides = {}) {
     id: "fixture-response-123",
     model: GEO_DEEPSEEK_MODEL,
     choices: [{ finish_reason: "stop", message: {
-      role: "assistant", content: JSON.stringify(report), reasoning_content: "fixture private reasoning to discard",
+      role: "assistant", content: JSON.stringify(report),
     } }],
     usage: { prompt_tokens: 40, completion_tokens: 20, total_tokens: 60,
       prompt_cache_hit_tokens: 5, prompt_cache_miss_tokens: 35 },
@@ -327,4 +327,168 @@ test("direct citation verification uses only vendor Fetch and rejects a private 
   assert.equal(evidence.fetch.responseId, "fixture-fetch-id");
   assert.equal(evidence.fetch.requestSha256, admitted[0].requestSha256);
   assert.ok(!Number.isNaN(Date.parse(evidence.fetch.fetchedAt)));
+});
+
+
+test("accepts only the exact canonical returned model and retains the rejected identity", async () => {
+  for (const model of ["deepseek-v4.1-flash-1017", "DEEPSEEK-FLASH", "deepseek-v4-pro"]) {
+    const { client } = fixture({ answer: (id) => completion(id, { model }) });
+    const evidence = await client.searchEvidence({ query: "行业研究" });
+    await assert.rejects(client.synthesize({ goal: "分析", evidence }), (error) => {
+      assert.equal(error.code, "DEEPSEEK_MODEL_RECEIPT");
+      assert.equal(error.ambiguous, false);
+      assert.equal(error.receipt.model, model);
+      assert.equal(error.receipt.requestedModel, GEO_DEEPSEEK_MODEL);
+      assert.equal(error.receipt.usage.totalTokens, 60);
+      return true;
+    });
+  }
+});
+
+test("keeps zero reasoning usage and rejects unexpected disabled-mode reasoning without losing billing", async () => {
+  const { client } = fixture({ answer(id) {
+    const body = completion(id);
+    body.usage.completion_tokens_details = { reasoning_tokens: 0 };
+    return body;
+  } });
+  const evidence = await client.searchEvidence({ query: "行业研究" });
+  const result = await client.synthesize({ goal: "分析", evidence });
+  assert.equal(result.usage.reasoningTokens, 0);
+  assert.deepEqual(result.thinking, { type: "disabled" });
+  assert.equal(result.requestedModel, GEO_DEEPSEEK_MODEL);
+  assert.equal(result.finishReason, "stop");
+  assert.equal(result.maxOutputTokens, 2500);
+  for (const kind of ["tokens", "content"]) {
+    const { client, calls } = fixture({ answer(id) {
+      const body = completion(id);
+      if (kind === "tokens") body.usage.completion_tokens_details = { reasoning_tokens: 3 };
+      else body.choices[0].message.reasoning_content = "fixture private reasoning to discard";
+      return body;
+    } });
+    const evidence = await client.searchEvidence({ query: "行业研究" });
+    await assert.rejects(client.synthesize({ goal: "分析", evidence }), (error) => {
+      assert.equal(error.code, "DEEPSEEK_MODE_MISMATCH");
+      assert.equal(error.ambiguous, false);
+      assert.equal(error.receipt.usage.totalTokens, 60);
+      if (kind === "tokens") assert.equal(error.receipt.usage.reasoningTokens, 3);
+      assert.equal(JSON.stringify(error).includes("fixture private reasoning"), false);
+      return true;
+    });
+    assert.equal(calls.length, 3);
+  }
+});
+
+test("rejects inconsistent usage details while retaining valid total usage", async () => {
+  for (const details of [
+    { prompt_cache_hit_tokens: 4 },
+    { prompt_cache_hit_tokens: -1 },
+    { prompt_cache_miss_tokens: undefined },
+    { prompt_tokens_details: { cached_tokens: 6 } },
+    { prompt_tokens_details: [] },
+    { completion_tokens_details: { reasoning_tokens: -1 } },
+    { completion_tokens_details: { reasoning_tokens: 0.5 } },
+    { completion_tokens_details: { reasoning_tokens: 21 } },
+    { completion_tokens_details: "unexpected" },
+  ]) {
+    const { client } = fixture({ answer(id) {
+      const body = completion(id);
+      Object.assign(body.usage, details);
+      return body;
+    } });
+    const evidence = await client.searchEvidence({ query: "行业研究" });
+    await assert.rejects(client.synthesize({ goal: "分析", evidence }), (error) => {
+      assert.equal(error.code, "DEEPSEEK_MODEL_RECEIPT");
+      assert.equal(error.ambiguous, false);
+      assert.equal(error.receipt.usage.totalTokens, 60);
+      return true;
+    });
+  }
+});
+
+test("binds synthesized source provenance to its successful fetch request before model I/O", async () => {
+  for (const mutate of [
+    (evidence) => { delete evidence.fetch; },
+    (evidence) => { evidence.fetch.url = "https://different.example.com/"; },
+    (evidence) => { evidence.fetch.status = 404; },
+    (evidence) => { evidence.fetch.requestSha256 = "1".repeat(64); },
+    (evidence) => { evidence.fetch.responseSha256 = "not-a-hash"; },
+    (evidence) => {
+      const source = evidence.sources[0];
+      source.url = "https://different.example.com/";
+      source.sourceId = "src-" + sha(source.url + "\n" + source.contentSha256).slice(0, 16);
+    },
+  ]) {
+    const { client, calls } = fixture();
+    const evidence = await client.searchEvidence({ query: "行业研究" });
+    mutate(evidence);
+    await assert.rejects(client.synthesize({ goal: "分析", evidence }), { code: "DEEPSEEK_INVALID_INPUT", ambiguous: false });
+    assert.equal(calls.length, 2);
+  }
+});
+
+test("cancels a late response body from a transport that ignored cancellation", async () => {
+  const controller = new AbortController();
+  let resolveTransport;
+  let bodyCancelled = false;
+  const { client } = fixture({ fetch: () => new Promise((resolve) => { resolveTransport = resolve; }) });
+  const work = client.searchEvidence({ query: "行业研究", signal: controller.signal });
+  await new Promise(setImmediate);
+  controller.abort();
+  await assert.rejects(work, { code: "DEEPSEEK_ABORTED", ambiguous: true });
+  resolveTransport(new Response(new ReadableStream({
+    cancel() { bodyCancelled = true; },
+  })));
+  await new Promise(setImmediate);
+  assert.equal(bodyCancelled, true);
+});
+
+
+test("bounds a stalled response body, cancels its reader, and does not retry", async () => {
+  let bodyCancelled = false;
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    const { client, calls } = fixture({ timeoutMs: 20, fetch: () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{"results":[')); },
+      cancel() { bodyCancelled = true; },
+    })) });
+    await assert.rejects(client.searchEvidence({ query: "行业研究" }), { code: "DEEPSEEK_TIMEOUT", ambiguous: true });
+    assert.equal(calls.length, 1);
+    assert.equal(bodyCancelled, true);
+  } finally { clearTimeout(keepAlive); }
+});
+
+test("bounds stalled preflight and DNS work without spending the next provider slot", async () => {
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    const preflight = fixture({ timeoutMs: 20 });
+    await assert.rejects(preflight.client.searchEvidence({ query: "行业研究", beforeRequest: () => new Promise(() => {}) }),
+      { code: "DEEPSEEK_TIMEOUT", ambiguous: false });
+    assert.equal(preflight.calls.length, 0);
+    const dns = fixture({ timeoutMs: 20, resolveHost: () => new Promise(() => {}) });
+    await assert.rejects(dns.client.searchEvidence({ query: "行业研究" }), (error) => {
+      assert.equal(error.code, "DEEPSEEK_TIMEOUT");
+      assert.equal(error.ambiguous, false);
+      assert.equal(error.receipt.search.responseId, "fixture-search-id");
+      return true;
+    });
+    assert.equal(dns.calls.length, 1);
+  } finally { clearTimeout(keepAlive); }
+});
+
+test("keeps a truncated result's finish reason and actual usage for reconciliation", async () => {
+  const { client, calls } = fixture({ answer(id) {
+    const body = completion(id);
+    body.choices[0].finish_reason = "length";
+    return body;
+  } });
+  const evidence = await client.searchEvidence({ query: "行业研究" });
+  await assert.rejects(client.synthesize({ goal: "分析", evidence }), (error) => {
+    assert.equal(error.code, "DEEPSEEK_INCOMPLETE_MODEL");
+    assert.equal(error.ambiguous, false);
+    assert.equal(error.receipt.finishReason, "length");
+    assert.equal(error.receipt.usage.totalTokens, 60);
+    assert.equal(error.receipt.maxOutputTokens, 2500);
+    return true;
+  });
+  assert.equal(calls.length, 3);
 });

@@ -2,7 +2,7 @@
   "schemaVersion": "geo-evidence-studio.project/v1",
   "id": "geo-evidence-studio-test",
   "displayName": "GeoEvidence Studio Test",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "repository": "geniusdapeng-collab/geo-evidence-studio-test",
   "license": "Apache-2.0",
   "status": "pilot",

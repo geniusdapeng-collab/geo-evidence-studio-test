@@ -1,0 +1,634 @@
+{
+  "schema": "workloom.mine-clear/ledger@1",
+  "task_id": "T-2026-1104-0003",
+  "repo": "geo-evidence-studio-test",
+  "title": "",
+  "created_at": "2026-11-04T13:48:02.979Z",
+  "updated_at": "2026-11-04T14:18:52.651572+00:00",
+  "baseline": {
+    "audit": {
+      "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+      "branch": "task/T-2026-1104-0003",
+      "remote": "origin",
+      "fetched_at": "2026-11-04T14:18:52.651572+00:00",
+      "fetch_status": "ok",
+      "notes": ""
+    },
+    "repair": {
+      "commit": null,
+      "reverified_problem_ids": []
+    },
+    "acceptance": {
+      "commit": null,
+      "is_descendant_of_repair": null
+    }
+  },
+  "environment": {
+    "kind": "local-preview",
+    "notes": "真实本机 SQLite/HTTP/Chrome，供应商传输为可重复夹具。"
+  },
+  "invariants": [
+    {
+      "id": "INV-1",
+      "text": "租户边界覆盖数据库 RLS、运行时上下文、事件、缓存和外部连接器。",
+      "source": "AGENTS.md#4.1"
+    },
+    {
+      "id": "INV-2",
+      "text": "经营事件、审批和关键回执只增不改；纠正通过新事件表达，不静默覆盖证据。",
+      "source": "AGENTS.md#4.2"
+    },
+    {
+      "id": "INV-3",
+      "text": "所有外部或变更性动作及其子调用，统一经过权限、PII、围栏和审批链路。",
+      "source": "AGENTS.md#4.3"
+    },
+    {
+      "id": "INV-4",
+      "text": "涉钱、敏感数据、群发、公开发布、交易和破坏性变更必须按高风险处理并由人审批。",
+      "source": "AGENTS.md#4.4"
+    },
+    {
+      "id": "INV-5",
+      "text": "没有真实回执就不能标记完成；mock、模拟和体验模式在数据结构与界面上都要明确区分。",
+      "source": "AGENTS.md#4.5"
+    },
+    {
+      "id": "INV-6",
+      "text": "客户原始经营数据不得上行；蜂群只接受白名单化、最小化、匿名化且可审计的元数据或派生经验。",
+      "source": "AGENTS.md#4.6"
+    },
+    {
+      "id": "INV-7",
+      "text": "租户覆盖层只能收紧围栏，不能放宽平台不可变红线。",
+      "source": "AGENTS.md#4.7"
+    },
+    {
+      "id": "INV-8",
+      "text": "模型、提示词、技能、bundle、策略和热更新必须先评测再灰度，且始终可回滚。",
+      "source": "AGENTS.md#4.8"
+    },
+    {
+      "id": "INV-9",
+      "text": "platform-ops、平台账户运营和平台秘密只属于 Andromeda。",
+      "source": "AGENTS.md#4.9"
+    },
+    {
+      "id": "INV-10",
+      "text": "Tiger 在获得单独的合规审查和用户明确授权前，只能模拟或纸面交易。",
+      "source": "AGENTS.md#4.10"
+    },
+    {
+      "id": "INV-11",
+      "text": "令牌、密码、API key、私钥、客户凭证和私密客户数据不得进入源码、文档、上下文、提示词、日志或提交。",
+      "source": "AGENTS.md#4.11"
+    },
+    {
+      "id": "INV-12",
+      "text": "个性化与行业扩展不得形成公共机制的第二事实源。",
+      "source": "AGENTS.md#4.12"
+    }
+  ],
+  "cards": [
+    {
+      "id": "MC-001",
+      "kind": "problem",
+      "title": "历史失败回执无法完整回读",
+      "state": "open",
+      "level": "L3",
+      "severity": "P1",
+      "evidence": [
+        {
+          "type": "code",
+          "ref": "apps/geo-evidence-studio/lib/superagent-store.mjs:239@fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+          "sha256": "51cc25db645844f4d181e15c91f3739d7a638aed4f3a31b993ffa938dd2d8367"
+        }
+      ],
+      "root_cause": {
+        "file": "apps/geo-evidence-studio/lib/superagent-store.mjs",
+        "line": 239,
+        "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6"
+      },
+      "trigger_path": "一轮出现已计量失败，随后恢复完成并有新的补充轮次。",
+      "assertions": [
+        {
+          "kind": "sample",
+          "given": "一轮出现已计量失败，随后恢复完成并有新的补充轮次。",
+          "expect": "当前和历史失败回执仍带实际标识和计量，外线程和非法轮次返回 404。",
+          "command": "node --test --test-name-pattern=revision.*(readback|receipt)|historical revision apps/geo-evidence-studio/test/superagent-store.test.mjs apps/geo-evidence-studio/test/superagent-http.test.mjs",
+          "exec": {
+            "file": "node",
+            "args": [
+              "--test",
+              "--test-name-pattern=revision.*(readback|receipt)|historical revision",
+              "apps/geo-evidence-studio/test/superagent-store.test.mjs",
+              "apps/geo-evidence-studio/test/superagent-http.test.mjs"
+            ]
+          },
+          "last_result": "not-run"
+        }
+      ],
+      "regression": {
+        "command": "node --test --test-name-pattern=revision.*(readback|receipt)|historical revision apps/geo-evidence-studio/test/superagent-store.test.mjs apps/geo-evidence-studio/test/superagent-http.test.mjs"
+      }
+    },
+    {
+      "id": "MC-002",
+      "kind": "problem",
+      "title": "模型身份可接受错误返回别名",
+      "state": "open",
+      "level": "L2",
+      "severity": "P1",
+      "evidence": [
+        {
+          "type": "code",
+          "ref": "apps/geo-evidence-studio/lib/superagent-deepseek.mjs:374@fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+          "sha256": "5c17f671428d069a3caf9e4db5415e60894daa60868c87096a0b4d08fb385fa9"
+        }
+      ],
+      "root_cause": {
+        "file": "apps/geo-evidence-studio/lib/superagent-deepseek.mjs",
+        "line": 374,
+        "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6"
+      },
+      "trigger_path": "供应商返回与请求不同的模型别名或大小写变体。",
+      "assertions": [
+        {
+          "kind": "sample",
+          "given": "供应商返回与请求不同的模型别名或大小写变体。",
+          "expect": "只有精确请求的模型身份可提交业务结果，已知计量保留。",
+          "command": "node --test --test-name-pattern=exact canonical apps/geo-evidence-studio/test/superagent-deepseek.test.mjs",
+          "exec": {
+            "file": "node",
+            "args": [
+              "--test",
+              "--test-name-pattern=exact canonical",
+              "apps/geo-evidence-studio/test/superagent-deepseek.test.mjs"
+            ]
+          },
+          "last_result": "not-run"
+        }
+      ],
+      "regression": {
+        "command": "node --test --test-name-pattern=exact canonical apps/geo-evidence-studio/test/superagent-deepseek.test.mjs"
+      }
+    },
+    {
+      "id": "MC-003",
+      "kind": "problem",
+      "title": "关闭思考场景接收不符结果",
+      "state": "open",
+      "level": "L2",
+      "severity": "P1",
+      "evidence": [
+        {
+          "type": "code",
+          "ref": "apps/geo-evidence-studio/lib/superagent-deepseek.mjs:385@fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+          "sha256": "5c17f671428d069a3caf9e4db5415e60894daa60868c87096a0b4d08fb385fa9"
+        }
+      ],
+      "root_cause": {
+        "file": "apps/geo-evidence-studio/lib/superagent-deepseek.mjs",
+        "line": 385,
+        "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6"
+      },
+      "trigger_path": "关闭思考的请求收到非零思考用量或非空思考结果。",
+      "assertions": [
+        {
+          "kind": "sample",
+          "given": "关闭思考的请求收到非零思考用量或非空思考结果。",
+          "expect": "合法零思考明细保留，不符结果拒绝提交且留存实际计量。",
+          "command": "node --test --test-name-pattern=reasoning usage apps/geo-evidence-studio/test/superagent-deepseek.test.mjs",
+          "exec": {
+            "file": "node",
+            "args": [
+              "--test",
+              "--test-name-pattern=reasoning usage",
+              "apps/geo-evidence-studio/test/superagent-deepseek.test.mjs"
+            ]
+          },
+          "last_result": "not-run"
+        }
+      ],
+      "regression": {
+        "command": "node --test --test-name-pattern=reasoning usage apps/geo-evidence-studio/test/superagent-deepseek.test.mjs"
+      }
+    },
+    {
+      "id": "MC-004",
+      "kind": "problem",
+      "title": "可选计量明细错误被忽略",
+      "state": "open",
+      "level": "L2",
+      "severity": "P1",
+      "evidence": [
+        {
+          "type": "code",
+          "ref": "apps/geo-evidence-studio/lib/superagent-deepseek.mjs:143@fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+          "sha256": "5c17f671428d069a3caf9e4db5415e60894daa60868c87096a0b4d08fb385fa9"
+        }
+      ],
+      "root_cause": {
+        "file": "apps/geo-evidence-studio/lib/superagent-deepseek.mjs",
+        "line": 143,
+        "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6"
+      },
+      "trigger_path": "cache 或 reasoning 明细矛盾、为负值或异常类型。",
+      "assertions": [
+        {
+          "kind": "sample",
+          "given": "cache 或 reasoning 明细矛盾、为负值或异常类型。",
+          "expect": "拒绝有矛盾的模型结果，保留可独立核实的顶层计量。",
+          "command": "node --test --test-name-pattern=inconsistent usage apps/geo-evidence-studio/test/superagent-deepseek.test.mjs",
+          "exec": {
+            "file": "node",
+            "args": [
+              "--test",
+              "--test-name-pattern=inconsistent usage",
+              "apps/geo-evidence-studio/test/superagent-deepseek.test.mjs"
+            ]
+          },
+          "last_result": "not-run"
+        }
+      ],
+      "regression": {
+        "command": "node --test --test-name-pattern=inconsistent usage apps/geo-evidence-studio/test/superagent-deepseek.test.mjs"
+      }
+    },
+    {
+      "id": "MC-005",
+      "kind": "problem",
+      "title": "来源未绑定实际 Fetch 回执",
+      "state": "open",
+      "level": "L3",
+      "severity": "P1",
+      "evidence": [
+        {
+          "type": "code",
+          "ref": "apps/geo-evidence-studio/lib/superagent-deepseek.mjs:351@fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+          "sha256": "5c17f671428d069a3caf9e4db5415e60894daa60868c87096a0b4d08fb385fa9"
+        }
+      ],
+      "root_cause": {
+        "file": "apps/geo-evidence-studio/lib/superagent-deepseek.mjs",
+        "line": 351,
+        "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6"
+      },
+      "trigger_path": "待综合证据中的来源 URL 与抓取回执不符。",
+      "assertions": [
+        {
+          "kind": "sample",
+          "given": "待综合证据中的来源 URL 与抓取回执不符。",
+          "expect": "请求哈希、成功状态与实际来源匹配后才开始模型综合。",
+          "command": "node --test --test-name-pattern=source provenance apps/geo-evidence-studio/test/superagent-deepseek.test.mjs",
+          "exec": {
+            "file": "node",
+            "args": [
+              "--test",
+              "--test-name-pattern=source provenance",
+              "apps/geo-evidence-studio/test/superagent-deepseek.test.mjs"
+            ]
+          },
+          "last_result": "not-run"
+        }
+      ],
+      "regression": {
+        "command": "node --test --test-name-pattern=source provenance apps/geo-evidence-studio/test/superagent-deepseek.test.mjs"
+      }
+    },
+    {
+      "id": "MC-006",
+      "kind": "problem",
+      "title": "取消后迟到响应正文未释放",
+      "state": "open",
+      "level": "L4",
+      "severity": "P2",
+      "evidence": [
+        {
+          "type": "code",
+          "ref": "apps/geo-evidence-studio/lib/superagent-deepseek.mjs:233@fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+          "sha256": "5c17f671428d069a3caf9e4db5415e60894daa60868c87096a0b4d08fb385fa9"
+        }
+      ],
+      "root_cause": {
+        "file": "apps/geo-evidence-studio/lib/superagent-deepseek.mjs",
+        "line": 233,
+        "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6"
+      },
+      "trigger_path": "传输忽略取消，在调用已经超时后返回响应正文。",
+      "assertions": [
+        {
+          "kind": "sample",
+          "given": "传输忽略取消，在调用已经超时后返回响应正文。",
+          "expect": "释放迟到正文；不生成成功结果，也不重试该调用。",
+          "command": "node --test --test-name-pattern=late response body apps/geo-evidence-studio/test/superagent-deepseek.test.mjs",
+          "exec": {
+            "file": "node",
+            "args": [
+              "--test",
+              "--test-name-pattern=late response body",
+              "apps/geo-evidence-studio/test/superagent-deepseek.test.mjs"
+            ]
+          },
+          "last_result": "not-run"
+        }
+      ],
+      "regression": {
+        "command": "node --test --test-name-pattern=late response body apps/geo-evidence-studio/test/superagent-deepseek.test.mjs"
+      }
+    },
+    {
+      "id": "MC-007",
+      "kind": "problem",
+      "title": "空采集或空导入可报告成功",
+      "state": "open",
+      "level": "L1",
+      "severity": "P1",
+      "evidence": [
+        {
+          "type": "code",
+          "ref": "apps/geo-evidence-studio/lib/service.mjs:105@fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+          "sha256": "fe1302bf9af14e2ccf5b6be8d06e937bf63220707c89c8608c508102aaf9e0a1"
+        }
+      ],
+      "root_cause": {
+        "file": "apps/geo-evidence-studio/lib/service.mjs",
+        "line": 105,
+        "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6"
+      },
+      "trigger_path": "选择不存在的问题，或导入空白答案。",
+      "assertions": [
+        {
+          "kind": "sample",
+          "given": "选择不存在的问题，或导入空白答案。",
+          "expect": "无效选择在创建运行前拒绝；空导入失败，不增加成功样本或已同步回执。",
+          "command": "node --test --test-name-pattern=HTTP API serves|empty imported apps/geo-evidence-studio/test/integration.test.mjs",
+          "exec": {
+            "file": "node",
+            "args": [
+              "--test",
+              "--test-name-pattern=HTTP API serves|empty imported",
+              "apps/geo-evidence-studio/test/integration.test.mjs"
+            ]
+          },
+          "last_result": "not-run"
+        }
+      ],
+      "regression": {
+        "command": "node --test --test-name-pattern=HTTP API serves|empty imported apps/geo-evidence-studio/test/integration.test.mjs"
+      }
+    },
+    {
+      "id": "MC-008",
+      "kind": "problem",
+      "title": "样本和事件写入非原子",
+      "state": "open",
+      "level": "L2",
+      "severity": "P1",
+      "evidence": [
+        {
+          "type": "code",
+          "ref": "apps/geo-evidence-studio/lib/store.mjs:310@fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+          "sha256": "831b8e3fdb15e6c53d1571ee024a0c25d3b11836258071de1be86556f4d38abd"
+        }
+      ],
+      "root_cause": {
+        "file": "apps/geo-evidence-studio/lib/store.mjs",
+        "line": 310,
+        "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6"
+      },
+      "trigger_path": "样本已经插入，但关联事件写入失败。",
+      "assertions": [
+        {
+          "kind": "sample",
+          "given": "样本已经插入，但关联事件写入失败。",
+          "expect": "样本及关联写入一起回滚，该次观测仅保留实际失败记录。",
+          "command": "node --test --test-name-pattern=incident write failure apps/geo-evidence-studio/test/integration.test.mjs",
+          "exec": {
+            "file": "node",
+            "args": [
+              "--test",
+              "--test-name-pattern=incident write failure",
+              "apps/geo-evidence-studio/test/integration.test.mjs"
+            ]
+          },
+          "last_result": "not-run"
+        }
+      ],
+      "regression": {
+        "command": "node --test --test-name-pattern=incident write failure apps/geo-evidence-studio/test/integration.test.mjs"
+      }
+    },
+    {
+      "id": "MC-009",
+      "kind": "problem",
+      "title": "并行报告覆盖彼此的快照",
+      "state": "open",
+      "level": "L3",
+      "severity": "P1",
+      "evidence": [
+        {
+          "type": "code",
+          "ref": "apps/geo-evidence-studio/lib/service.mjs:408@fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+          "sha256": "fe1302bf9af14e2ccf5b6be8d06e937bf63220707c89c8608c508102aaf9e0a1"
+        }
+      ],
+      "root_cause": {
+        "file": "apps/geo-evidence-studio/lib/service.mjs",
+        "line": 408,
+        "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6"
+      },
+      "trigger_path": "两个不同运行同时导出默认报告。",
+      "assertions": [
+        {
+          "kind": "sample",
+          "given": "两个不同运行同时导出默认报告。",
+          "expect": "两份导出使用各自目录，JSON 和 Markdown 都匹配各自运行，未知运行拒绝。",
+          "command": "node --test --test-name-pattern=default reports apps/geo-evidence-studio/test/integration.test.mjs",
+          "exec": {
+            "file": "node",
+            "args": [
+              "--test",
+              "--test-name-pattern=default reports",
+              "apps/geo-evidence-studio/test/integration.test.mjs"
+            ]
+          },
+          "last_result": "not-run"
+        }
+      ],
+      "regression": {
+        "command": "node --test --test-name-pattern=default reports apps/geo-evidence-studio/test/integration.test.mjs"
+      }
+    },
+    {
+      "id": "MC-010",
+      "kind": "problem",
+      "title": "工作台保留旧身份结果或丢失重试号",
+      "state": "open",
+      "level": "L4",
+      "severity": "P1",
+      "evidence": [
+        {
+          "type": "code",
+          "ref": "apps/geo-evidence-studio/public/app.js:218@fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+          "sha256": "c9f6811c3b8736dbf916085ab949cc445def676a966547abb6d163adfa6fa93a"
+        }
+      ],
+      "root_cause": {
+        "file": "apps/geo-evidence-studio/public/app.js",
+        "line": 218,
+        "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6"
+      },
+      "trigger_path": "身份切换期间旧异步返回，或同身份重连前派发回执未知。",
+      "assertions": [
+        {
+          "kind": "sample",
+          "given": "身份切换期间旧异步返回，或同身份重连前派发回执未知。",
+          "expect": "旧返回不能显示成功，身份变化清空旧数据，同身份保留未知提交的重试编号和草稿。",
+          "command": "node --test --test-name-pattern=identity|empty task refresh|same identity|poll refreshes apps/geo-evidence-studio/test/public-ui.test.mjs",
+          "exec": {
+            "file": "node",
+            "args": [
+              "--test",
+              "--test-name-pattern=identity|empty task refresh|same identity|poll refreshes",
+              "apps/geo-evidence-studio/test/public-ui.test.mjs"
+            ]
+          },
+          "last_result": "not-run"
+        }
+      ],
+      "regression": {
+        "command": "node --test --test-name-pattern=identity|empty task refresh|same identity|poll refreshes apps/geo-evidence-studio/test/public-ui.test.mjs"
+      }
+    },
+    {
+      "id": "MC-011",
+      "kind": "problem",
+      "title": "SQLite 自动回滚掩盖原始错误",
+      "state": "open",
+      "level": "L2",
+      "severity": "P2",
+      "evidence": [
+        {
+          "type": "code",
+          "ref": "apps/geo-evidence-studio/lib/superagent-store.mjs:207@fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+          "sha256": "51cc25db645844f4d181e15c91f3739d7a638aed4f3a31b993ffa938dd2d8367"
+        }
+      ],
+      "root_cause": {
+        "file": "apps/geo-evidence-studio/lib/superagent-store.mjs",
+        "line": 207,
+        "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6"
+      },
+      "trigger_path": "SQLite 语句触发整个事务的自动回滚。",
+      "assertions": [
+        {
+          "kind": "sample",
+          "given": "SQLite 语句触发整个事务的自动回滚。",
+          "expect": "原始写入错误保留，未提交状态不可见，后续正常写入可重试。",
+          "command": "node --test --test-name-pattern=automatic rollback apps/geo-evidence-studio/test/superagent-store.test.mjs",
+          "exec": {
+            "file": "node",
+            "args": [
+              "--test",
+              "--test-name-pattern=automatic rollback",
+              "apps/geo-evidence-studio/test/superagent-store.test.mjs"
+            ]
+          },
+          "last_result": "not-run"
+        }
+      ],
+      "regression": {
+        "command": "node --test --test-name-pattern=automatic rollback apps/geo-evidence-studio/test/superagent-store.test.mjs"
+      }
+    },
+    {
+      "id": "MC-012",
+      "kind": "problem",
+      "title": "重复关闭导致数据库异常",
+      "state": "open",
+      "level": "L4",
+      "severity": "P2",
+      "evidence": [
+        {
+          "type": "code",
+          "ref": "apps/geo-evidence-studio/server.mjs:279@fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+          "sha256": "acb675a2ab24ad3b796c7ea51f170955400666dcc6eab6a0d6ac1c557d42938e"
+        }
+      ],
+      "root_cause": {
+        "file": "apps/geo-evidence-studio/server.mjs",
+        "line": 279,
+        "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6"
+      },
+      "trigger_path": "服务同时或重复收到关闭请求。",
+      "assertions": [
+        {
+          "kind": "sample",
+          "given": "服务同时或重复收到关闭请求。",
+          "expect": "停止接单和执行后仅关闭一次连接，所有关闭调用可等待同一结果。",
+          "command": "node --test --test-name-pattern=Studio.*(shutdown|close|listening) apps/geo-evidence-studio/test/superagent-http.test.mjs",
+          "exec": {
+            "file": "node",
+            "args": [
+              "--test",
+              "--test-name-pattern=Studio.*(shutdown|close|listening)",
+              "apps/geo-evidence-studio/test/superagent-http.test.mjs"
+            ]
+          },
+          "last_result": "not-run"
+        }
+      ],
+      "regression": {
+        "command": "node --test --test-name-pattern=Studio.*(shutdown|close|listening) apps/geo-evidence-studio/test/superagent-http.test.mjs"
+      }
+    },
+    {
+      "id": "MC-013",
+      "kind": "problem",
+      "title": "草案可被重标为真实数据",
+      "state": "open",
+      "level": "L1",
+      "severity": "P1",
+      "evidence": [
+        {
+          "type": "code",
+          "ref": "apps/geo-evidence-studio/lib/service.mjs:333@fd298c391d0b52545a80a29a7afc7caf6f14aaf6",
+          "sha256": "fe1302bf9af14e2ccf5b6be8d06e937bf63220707c89c8608c508102aaf9e0a1"
+        }
+      ],
+      "root_cause": {
+        "file": "apps/geo-evidence-studio/lib/service.mjs",
+        "line": 333,
+        "commit": "fd298c391d0b52545a80a29a7afc7caf6f14aaf6"
+      },
+      "trigger_path": "草案入口被传入真实模式或非布尔 force。",
+      "assertions": [
+        {
+          "kind": "sample",
+          "given": "草案入口被传入真实模式或非布尔 force。",
+          "expect": "确定性草案保持 draft，错误参数在创建文章前返回输入错误。",
+          "command": "node --test --test-name-pattern=deterministic article drafts|tool bridge rejects apps/geo-evidence-studio/test/integration.test.mjs",
+          "exec": {
+            "file": "node",
+            "args": [
+              "--test",
+              "--test-name-pattern=deterministic article drafts|tool bridge rejects",
+              "apps/geo-evidence-studio/test/integration.test.mjs"
+            ]
+          },
+          "last_result": "not-run"
+        }
+      ],
+      "regression": {
+        "command": "node --test --test-name-pattern=deterministic article drafts|tool bridge rejects apps/geo-evidence-studio/test/integration.test.mjs"
+      }
+    }
+  ],
+  "gates": [],
+  "issue": {
+    "slug": "geniusdapeng-collab/geo-evidence-studio-test",
+    "number": 2
+  },
+  "notes": "本 PR 保留审计基线与断言定义。固定候选后，独立运行回执按同一候选 SHA 保存和核验。"
+}
